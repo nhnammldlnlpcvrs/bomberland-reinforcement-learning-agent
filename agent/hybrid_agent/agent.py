@@ -28,6 +28,7 @@ MAX_BFS_ITEM   = 10
 MAX_BFS_TARGET = 10
 MAX_BFS_ENEMY  = 8
 MAX_ENEMY_ESCAPE_SIM = 7
+MAX_FUTURE_SURVIVABILITY = 5
 MAX_RADIUS     = 5
 
 TILE_GRASS    = 0
@@ -63,6 +64,17 @@ BOMB_HYSTERESIS_THRESHOLD = 80
 BOMB_HYSTERESIS_TUNED_THRESHOLD = BOMB_HYSTERESIS_THRESHOLD + 50
 MEANINGFUL_ESCAPE_PRESSURE = 500
 ESCAPE_PRESSURE_SCORE_MULTIPLIER = 0.25
+
+FUTURE_SAFE_CELL_WEIGHT = 18
+FUTURE_BRANCH_WEIGHT = 35
+FUTURE_DEPTH_WEIGHT = 20
+FUTURE_DEAD_END_PENALTY = 25
+FUTURE_SCORE_MULTIPLIER = 1.0
+OPEN_ZONE_BONUS = 60
+CORRIDOR_PENALTY = 40
+DEAD_END_PENALTY = 120
+NEAR_ENEMY_PRESSURE_2 = 120
+NEAR_ENEMY_PRESSURE_4 = 60
 
 
 # ==============================================================================
@@ -122,8 +134,108 @@ def _free_neighbors(pos, game_map, bomb_positions):
     for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
         nr, nc = r + dr, c + dc
         if _is_passable(nr, nc, game_map, bomb_positions):
-            cnt += 1
+                cnt += 1
     return cnt
+
+
+def _is_corridor_or_dead_end(pos, game_map, bomb_set):
+    """Classify local mobility around pos."""
+    free = _free_neighbors(pos, game_map, bomb_set)
+    if free <= 1:
+        return "dead_end"
+    if free == 2:
+        return "corridor"
+    return "open"
+
+
+def _nearby_enemy_pressure(pos, players, agent_id):
+    """Small risk estimate for being close to alive enemies."""
+    pressure = 0
+    for i, p in enumerate(players):
+        if i == agent_id or int(p[2]) != 1:
+            continue
+        dist = abs(pos[0] - int(p[0])) + abs(pos[1] - int(p[1]))
+        if dist <= 2:
+            pressure += NEAR_ENEMY_PRESSURE_2
+        elif dist <= 4:
+            pressure += NEAR_ENEMY_PRESSURE_4
+    return pressure
+
+
+def _future_survivability_score(pos, obs, danger_time,
+                                max_depth=MAX_FUTURE_SURVIVABILITY,
+                                cache=None):
+    """Score how much safe space remains reachable from pos soon."""
+    key = (pos[0], pos[1])
+    if cache is not None and key in cache:
+        return cache[key]
+
+    game_map = obs["map"]
+    bomb_set = _bomb_set(obs["bombs"])
+    q = deque()
+    q.append((pos, 0))
+    visited = {pos}
+    safe_cells = 0
+    branch_points = 0
+    dead_end_cells = 0
+    max_safe_depth = 0
+
+    while q:
+        cell, dist = q.popleft()
+        r, c = cell
+
+        if danger_time[r, c] <= dist + 1:
+            continue
+
+        safe_cells += 1
+        if dist > max_safe_depth:
+            max_safe_depth = dist
+
+        mobility = _free_neighbors(cell, game_map, bomb_set)
+        if mobility >= 3:
+            branch_points += 1
+        elif mobility <= 1:
+            dead_end_cells += 1
+
+        if dist >= max_depth:
+            continue
+
+        for action in MOVE_ACTIONS:
+            dr, dc = DIRS[action]
+            nr, nc = r + dr, c + dc
+            npos = (nr, nc)
+
+            if npos in visited:
+                continue
+            if not _is_passable(nr, nc, game_map, bomb_set):
+                continue
+
+            visited.add(npos)
+            q.append((npos, dist + 1))
+
+    score = 0
+    score += safe_cells * FUTURE_SAFE_CELL_WEIGHT
+    score += branch_points * FUTURE_BRANCH_WEIGHT
+    score += max_safe_depth * FUTURE_DEPTH_WEIGHT
+    score -= dead_end_cells * FUTURE_DEAD_END_PENALTY
+
+    if safe_cells <= 2:
+        score -= 250
+    elif safe_cells <= 4:
+        score -= 120
+
+    if _free_neighbors(pos, game_map, bomb_set) <= 1:
+        score -= 180
+
+    if danger_time[pos[0], pos[1]] == INF:
+        score += 40
+    elif danger_time[pos[0], pos[1]] >= 5:
+        score += 20
+
+    score = max(-500, min(score, 500))
+    if cache is not None:
+        cache[key] = score
+    return score
 
 
 # ==============================================================================
@@ -513,7 +625,8 @@ def _is_meaningful_bomb(obs, bomb_pos, agent_id, escape_pressure=None):
 # ==============================================================================
 
 def _score_move(action, my_pos, my_state, game_map, players, bomb_set,
-                danger_time, item_targets, box_spots, enemies):
+                danger_time, item_targets, box_spots, enemies, obs, agent_id,
+                future_cache=None):
     """Score a movement action (0-4)."""
     my_r, my_c = my_pos
     _, _, _, bombs_left, _ = my_state
@@ -532,7 +645,7 @@ def _score_move(action, my_pos, my_state, game_map, players, bomb_set,
 
     # ----- Safety (invariant) -----
     if dt <= 1:
-        score -= 10000          # immediate death
+        return -1e9, None
     elif dt <= 3:
         score -= 800            # dangerous in near future
     elif dt == INF:
@@ -547,6 +660,23 @@ def _score_move(action, my_pos, my_state, game_map, players, bomb_set,
     score += free_n * 25
     if free_n <= 1:
         score -= 300 if free_n == 0 else 100
+
+    # ----- Future survivability -----
+    future_score = _future_survivability_score(
+        npos, obs, danger_time, MAX_FUTURE_SURVIVABILITY, future_cache
+    )
+    score += future_score * FUTURE_SCORE_MULTIPLIER
+
+    zone_type = _is_corridor_or_dead_end(npos, game_map, bomb_set)
+    enemy_pressure = _nearby_enemy_pressure(npos, players, agent_id)
+    if zone_type == "dead_end":
+        score -= DEAD_END_PENALTY
+        score -= enemy_pressure
+    elif zone_type == "corridor":
+        score -= CORRIDOR_PENALTY
+        score -= enemy_pressure * 0.5
+    else:
+        score += OPEN_ZONE_BONUS
 
     # ----- Item pickup -----
     if game_map[nr, nc] in (TILE_RADIUS, TILE_CAPACITY):
@@ -613,6 +743,13 @@ def _score_bomb(my_pos, my_state, game_map, players, bomb_set,
     if not _is_meaningful_bomb(obs, my_pos, agent_id, escape_pressure):
         return -1e9
 
+    simulated_danger = _simulate_bomb_danger_map(obs, my_pos, agent_id, BOMB_TIMER)
+    escape_future_score = _future_survivability_score(
+        my_pos, obs, simulated_danger, MAX_FUTURE_SURVIVABILITY
+    )
+    if escape_future_score < -250:
+        return -1e9
+
     score = 0.0
     boxes = _boxes_in_blast(my_r, my_c, radius, game_map)
     threatens = _enemy_in_blast_line(my_r, my_c, radius, game_map, players, agent_id)
@@ -627,6 +764,10 @@ def _score_bomb(my_pos, my_state, game_map, players, bomb_set,
 
     # ----- Enemy escape pressure -----
     score += escape_pressure * ESCAPE_PRESSURE_SCORE_MULTIPLIER
+
+    # ----- Future survivability after bomb -----
+    if escape_future_score < -100:
+        score -= 300
 
     # ----- Proximity threat -----
     enemies = _alive_enemies(obs, agent_id)
@@ -664,6 +805,7 @@ class Agent:
         self.agent_id = int(agent_id)
 
     def act(self, obs: dict) -> int:
+        self._future_cache = {}
         game_map = obs["map"]
         players = obs["players"]
         bombs = obs["bombs"]
@@ -713,7 +855,8 @@ class Agent:
             else:
                 score, pos = _score_move(action, my_pos, my_state, game_map,
                                          players, bomb_set, danger_time,
-                                         item_targets, box_spots, enemies)
+                                         item_targets, box_spots, enemies, obs,
+                                         self.agent_id, self._future_cache)
 
             if score > best_score:
                 best_score = score
@@ -726,7 +869,8 @@ class Agent:
             for action in MOVE_ACTIONS:
                 score, _ = _score_move(action, my_pos, my_state, game_map,
                                        players, bomb_set, danger_time,
-                                       item_targets, box_spots, enemies)
+                                       item_targets, box_spots, enemies, obs,
+                                       self.agent_id, self._future_cache)
                 if score > best_move_score:
                     best_move_score = score
             pressure = 0 if bomb_escape_pressure is None else bomb_escape_pressure
@@ -742,7 +886,9 @@ class Agent:
                 for action in MOVE_ACTIONS:
                     score, pos = _score_move(action, my_pos, my_state, game_map,
                                              players, bomb_set, danger_time,
-                                             item_targets, box_spots, enemies)
+                                             item_targets, box_spots, enemies,
+                                             obs, self.agent_id,
+                                             self._future_cache)
                     if score > best_score:
                         best_score = score
                         best_action = action
