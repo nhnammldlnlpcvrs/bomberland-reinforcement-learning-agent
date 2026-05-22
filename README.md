@@ -49,6 +49,23 @@ Teams build intelligent agents using strategies from tree search to deep reinfor
 ---
 
 ## 🚀 Quick Start (Local Testing & Organizer Scripts)
+### Run Check
+
+```bash
+  python -m scripts.participant.run_local_match --agent_paths agent/hybrid_agent TacticalRuleAgent
+  --num_episodes 10
+
+  python -m scripts.participant.run_local_match --agent_paths agent/hybrid_agent TacticalRuleAgent
+  SmarterRuleAgent GeniusRuleAgent --num_episodes 20
+
+  python -m scripts.participant.estimate_rankings --agent_path agent/hybrid_agent --num_matches 100
+```
+
+or
+
+```bash
+  python -m scripts.participant.estimate_rankings --agent_path agent/hybrid_agent --num_matches 300
+```
 
 If you want to run the submission server locally for testing, follow these steps to accurately simulate the sandboxed VM environment:
 
