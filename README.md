@@ -103,5 +103,3 @@ If you want to run the submission server locally for testing, follow these steps
 
 ## 💬 Community & Support
 Join our community on [Discord](https://discord.gg/GqQJzuunBY)
-
-Please let us know of any bugs or suggestions by [raising an issue](https://github.com/VLTisME/Bomberland-GDGoC-AI-Challenge/issues).
