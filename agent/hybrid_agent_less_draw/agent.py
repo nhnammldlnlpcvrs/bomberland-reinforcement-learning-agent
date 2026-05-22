@@ -863,7 +863,41 @@ class Agent:
 
     def __init__(self, agent_id: int):
         self.agent_id = int(agent_id)
+        self._reset_game_state()
+
+    def _reset_game_state(self):
         self.step_count = 0
+        self._future_cache = {}
+
+    def _maybe_reset_game_state(self, obs):
+        players = obs["players"]
+        bombs = obs["bombs"]
+        my_r, my_c = int(players[self.agent_id][0]), int(players[self.agent_id][1])
+        spawn_positions = {
+            0: (1, 1),
+            1: (BOARD_SIZE - 2, BOARD_SIZE - 2),
+            2: (1, BOARD_SIZE - 2),
+            3: (BOARD_SIZE - 2, 1),
+        }
+
+        if "step" in obs or "step_count" in obs:
+            current_step = int(obs["step"] if "step" in obs else obs["step_count"])
+            if current_step <= 1:
+                self._reset_game_state()
+            self.step_count = current_step
+            return
+
+        if not hasattr(self, "step_count"):
+            self._reset_game_state()
+
+        bombs_arr = np.asarray(bombs)
+        bombs_empty = bombs_arr.size == 0
+        alive = int(players[self.agent_id][2]) == 1
+        at_spawn = (my_r, my_c) == spawn_positions.get(self.agent_id)
+        if alive and at_spawn and bombs_empty and self.step_count > 20:
+            self._reset_game_state()
+
+        self.step_count += 1
 
     def _get_pressure_phase(self, obs):
         alive_enemies = len(_alive_enemies(obs, self.agent_id))
@@ -876,8 +910,8 @@ class Agent:
         return "normal"
 
     def act(self, obs: dict) -> int:
+        self._maybe_reset_game_state(obs)
         self._future_cache = {}
-        self.step_count += 1
         game_map = obs["map"]
         players = obs["players"]
         bombs = obs["bombs"]
