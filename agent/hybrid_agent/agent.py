@@ -27,6 +27,7 @@ MAX_BFS_ESCAPE = 8
 MAX_BFS_ITEM   = 10
 MAX_BFS_TARGET = 10
 MAX_BFS_ENEMY  = 8
+MAX_ENEMY_ESCAPE_SIM = 7
 MAX_RADIUS     = 5
 
 TILE_GRASS    = 0
@@ -57,6 +58,11 @@ BLAST_DIRS = [(1, 0), (-1, 0), (0, 1), (0, -1)]
 
 MOVE_ACTIONS = [A_LEFT, A_RIGHT, A_UP, A_DOWN]
 ALL_ACTIONS  = [A_STOP, A_LEFT, A_RIGHT, A_UP, A_DOWN, A_BOMB]
+
+BOMB_HYSTERESIS_THRESHOLD = 80
+BOMB_HYSTERESIS_TUNED_THRESHOLD = BOMB_HYSTERESIS_THRESHOLD + 50
+MEANINGFUL_ESCAPE_PRESSURE = 500
+ESCAPE_PRESSURE_SCORE_MULTIPLIER = 0.25
 
 
 # ==============================================================================
@@ -375,6 +381,133 @@ def _can_escape_after_bomb(obs, agent_id, game_map, bomb_set):
     return result is not None
 
 
+def _simulate_bomb_danger_map(obs, bomb_pos, owner_id, timer=BOMB_TIMER):
+    """Return danger map after adding one hypothetical bomb without mutating obs."""
+    game_map = obs["map"]
+    players = obs["players"]
+    br, bc = bomb_pos
+
+    bombs_arr = np.asarray(obs["bombs"], dtype=np.int32)
+    fake_bomb = np.array([[br, bc, timer, owner_id]], dtype=np.int32)
+    if bombs_arr.size == 0:
+        new_bombs = fake_bomb
+    else:
+        if bombs_arr.ndim == 1:
+            bombs_arr = bombs_arr.reshape(1, -1)
+        new_bombs = np.vstack([bombs_arr, fake_bomb])
+
+    return _compute_danger_map(game_map, players, new_bombs)
+
+
+def _enemy_safe_reachable_cells(enemy_pos, game_map, bombs, danger_time,
+                                max_depth=MAX_ENEMY_ESCAPE_SIM):
+    """Count safe cells an enemy can reach within max_depth."""
+    bomb_positions = _bomb_set(bombs)
+    q = deque()
+    q.append((enemy_pos, 0))
+    visited = {enemy_pos}
+    safe_count = 0
+
+    while q:
+        pos, dist = q.popleft()
+        r, c = pos
+
+        if danger_time[r, c] > dist + 1:
+            safe_count += 1
+
+        if dist >= max_depth:
+            continue
+
+        for dr, dc in DIRS.values():
+            nr, nc = r + dr, c + dc
+            npos = (nr, nc)
+
+            if npos in visited:
+                continue
+            if not _is_passable(nr, nc, game_map, bomb_positions):
+                continue
+            if danger_time[nr, nc] <= dist:
+                continue
+
+            visited.add(npos)
+            q.append((npos, dist + 1))
+
+    return safe_count
+
+
+def _estimate_enemy_escape_pressure(obs, bomb_pos, agent_id):
+    """Estimate how much a hypothetical bomb restricts enemy escape options."""
+    game_map = obs["map"]
+    players = obs["players"]
+    bombs = obs["bombs"]
+    my_bonus = int(players[agent_id][4]) if 0 <= agent_id < len(players) else 0
+    radius = 1 + my_bonus
+
+    danger_before = _compute_danger_map(game_map, players, bombs)
+    danger_after = _simulate_bomb_danger_map(obs, bomb_pos, agent_id, BOMB_TIMER)
+    bombs_arr = np.asarray(bombs, dtype=np.int32)
+    fake_bomb = np.array([[bomb_pos[0], bomb_pos[1], BOMB_TIMER, agent_id]],
+                         dtype=np.int32)
+    if bombs_arr.size == 0:
+        bombs_after = fake_bomb
+    else:
+        if bombs_arr.ndim == 1:
+            bombs_arr = bombs_arr.reshape(1, -1)
+        bombs_after = np.vstack([bombs_arr, fake_bomb])
+    pressure = 0
+
+    for i, p in enumerate(players):
+        if i == agent_id or int(p[2]) != 1:
+            continue
+
+        enemy_pos = (int(p[0]), int(p[1]))
+        safe_before = _enemy_safe_reachable_cells(
+            enemy_pos, game_map, bombs, danger_before, MAX_ENEMY_ESCAPE_SIM
+        )
+        safe_after = _enemy_safe_reachable_cells(
+            enemy_pos, game_map, bombs_after, danger_after, MAX_ENEMY_ESCAPE_SIM
+        )
+        reduced = safe_before - safe_after
+        direct_hit = enemy_pos in _blast_cells(
+            bomb_pos[0], bomb_pos[1], radius, game_map
+        )
+        near_bomb = abs(enemy_pos[0] - bomb_pos[0]) + abs(enemy_pos[1] - bomb_pos[1]) <= 3
+
+        if reduced > 0 or direct_hit:
+            if safe_after == 0:
+                pressure += 900
+            elif safe_after <= 2:
+                pressure += 500
+            elif safe_after <= 4:
+                pressure += 250
+
+        if reduced > 0:
+            pressure += reduced * 60
+
+        if direct_hit:
+            pressure += 350
+
+        if near_bomb:
+            pressure += 120
+
+    return min(pressure, 1600)
+
+
+def _is_meaningful_bomb(obs, bomb_pos, agent_id, escape_pressure=None):
+    """True when a bomb has farming value or creates meaningful enemy pressure."""
+    game_map = obs["map"]
+    players = obs["players"]
+    bonus = int(players[agent_id][4]) if 0 <= agent_id < len(players) else 0
+    radius = 1 + bonus
+    boxes = _boxes_in_blast(bomb_pos[0], bomb_pos[1], radius, game_map)
+    threatens = _enemy_in_blast_line(
+        bomb_pos[0], bomb_pos[1], radius, game_map, players, agent_id
+    )
+    if escape_pressure is None:
+        escape_pressure = _estimate_enemy_escape_pressure(obs, bomb_pos, agent_id)
+    return boxes > 0 or threatens or escape_pressure >= MEANINGFUL_ESCAPE_PRESSURE
+
+
 # ==============================================================================
 # Action scoring
 # ==============================================================================
@@ -397,7 +530,7 @@ def _score_move(action, my_pos, my_state, game_map, players, bomb_set,
     dt = danger_time[nr, nc]
     curr_dt = danger_time[my_r, my_c]
 
-    # ----- Safety -----
+    # ----- Safety (invariant) -----
     if dt <= 1:
         score -= 10000          # immediate death
     elif dt <= 3:
@@ -413,7 +546,7 @@ def _score_move(action, my_pos, my_state, game_map, players, bomb_set,
     free_n = _free_neighbors(npos, game_map, bomb_set)
     score += free_n * 25
     if free_n <= 1:
-        score -= 300 if free_n == 0 else 100  # dead-end penalty stronger for 0
+        score -= 300 if free_n == 0 else 100
 
     # ----- Item pickup -----
     if game_map[nr, nc] in (TILE_RADIUS, TILE_CAPACITY):
@@ -450,49 +583,53 @@ def _score_move(action, my_pos, my_state, game_map, players, bomb_set,
                                     danger_time, MAX_BFS_ENEMY)
         if enemy_bfs is not None:
             _, enemy_dist, _ = enemy_bfs
-            # Moderate preference – not too aggressive, not too passive
             score += max(0, 80 - 6 * enemy_dist)
 
     # ----- STOP-specific -----
     if action == A_STOP:
         if dt <= 1:
-            score -= 2000       # heavy penalty for freezing in danger
-        score -= 10             # slight bias toward moving
+            score -= 2000
+        score -= 10  # slight bias toward moving
 
     return score, npos
 
 
 def _score_bomb(my_pos, my_state, game_map, players, bomb_set,
-                danger_time, obs, agent_id):
-    """Score the PLACE_BOMB action. Returns -1e9 if invalid."""
+                danger_time, obs, agent_id, escape_pressure=None):
+    """Score the PLACE_BOMB action.  Returns -1e9 if invalid or unsafe."""
     my_r, my_c = my_pos
     _, _, _, bombs_left, bonus = my_state
     radius = 1 + bonus
 
-    # Preconditions
+    # Preconditions (invariant)
     if bombs_left <= 0:
         return -1e9
     if my_pos in bomb_set:
         return -1e9
-
-    # Must be able to escape
     if not _can_escape_after_bomb(obs, agent_id, game_map, bomb_set):
+        return -1e9
+    if escape_pressure is None:
+        escape_pressure = _estimate_enemy_escape_pressure(obs, my_pos, agent_id)
+    if not _is_meaningful_bomb(obs, my_pos, agent_id, escape_pressure):
         return -1e9
 
     score = 0.0
     boxes = _boxes_in_blast(my_r, my_c, radius, game_map)
-    enemies = _alive_enemies(obs, agent_id)
     threatens = _enemy_in_blast_line(my_r, my_c, radius, game_map, players, agent_id)
 
-    # Box destruction value
+    # ----- Box destruction -----
     if boxes > 0:
         score += 350 + 80 * boxes
 
-    # Enemy threat
+    # ----- Direct enemy hit -----
     if threatens:
         score += 500
 
-    # Proximity threat: enemy near the blast zone
+    # ----- Enemy escape pressure -----
+    score += escape_pressure * ESCAPE_PRESSURE_SCORE_MULTIPLIER
+
+    # ----- Proximity threat -----
+    enemies = _alive_enemies(obs, agent_id)
     if enemies:
         blast = _blast_cells(my_r, my_c, radius, game_map)
         for er, ec in enemies:
@@ -501,7 +638,7 @@ def _score_bomb(my_pos, my_state, game_map, players, bomb_set,
                 score += 150
                 break
 
-    # Penalize bombing with no tactical value
+    # ----- Penalise valueless bombs -----
     if boxes == 0 and not threatens:
         score -= 200
 
@@ -544,11 +681,11 @@ class Agent:
         # ---- 2. Danger Map ----
         danger_time = _compute_danger_map(game_map, players, bombs)
 
-        # ---- 3. Pre-compute targets (lazy, only when needed) ----
+        # ---- 3. Pre-compute shared data ----
         item_targets = _item_targets(game_map)
         box_spots = _box_bomb_spots(game_map, bomb_set)
 
-        # ---- 4. Emergency: if in danger, escape ----
+        # ---- 4. Emergency escape ----
         curr_dt = danger_time[my_r, my_c]
         if curr_dt <= 3:
             safe = _find_nearest_safe(my_pos, game_map, bomb_set,
@@ -556,16 +693,23 @@ class Agent:
             if safe is not None:
                 return safe[0]  # first_action
 
+        bomb_escape_pressure = None
+        if bombs_left > 0 and my_pos not in bomb_set:
+            if _can_escape_after_bomb(obs, self.agent_id, game_map, bomb_set):
+                bomb_escape_pressure = _estimate_enemy_escape_pressure(
+                    obs, my_pos, self.agent_id
+                )
+
         # ---- 5. Score all actions ----
         best_action = A_STOP
         best_score = -1e9
-        best_pos = my_pos
 
         for action in ALL_ACTIONS:
             if action == A_BOMB:
                 score = _score_bomb(my_pos, my_state, game_map, players,
-                                    bomb_set, danger_time, obs, self.agent_id)
-                pos = my_pos  # bombing doesn't move
+                                    bomb_set, danger_time, obs,
+                                    self.agent_id, bomb_escape_pressure)
+                pos = my_pos
             else:
                 score, pos = _score_move(action, my_pos, my_state, game_map,
                                          players, bomb_set, danger_time,
@@ -576,7 +720,7 @@ class Agent:
                 best_action = action
                 best_pos = pos
 
-        # ---- 6. Bomb hysteresis: only bomb if >100 above next-best move ----
+        # ---- 6. Bomb hysteresis ----
         if best_action == A_BOMB:
             best_move_score = -1e9
             for action in MOVE_ACTIONS:
@@ -585,7 +729,13 @@ class Agent:
                                        item_targets, box_spots, enemies)
                 if score > best_move_score:
                     best_move_score = score
-            if best_score < best_move_score + 100:
+            pressure = 0 if bomb_escape_pressure is None else bomb_escape_pressure
+            threshold = BOMB_HYSTERESIS_TUNED_THRESHOLD
+            if len(enemies) == 1 or pressure >= 900:
+                threshold = 0
+            elif pressure >= 500:
+                threshold = 80
+            if best_score < best_move_score + threshold:
                 # Fall back to best move
                 best_action = A_STOP
                 best_score = -1e9
