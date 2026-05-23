@@ -11,3 +11,4 @@ Values marked `approx` are approximate and should be replaced with measured resu
 | tiny imitation baseline initialized | pending | replay imitation dataset | pending | n/a | n/a | n/a | n/a | n/a | research | Tiny CNN behavior-cloning baseline for dataset quality and feature learnability checks. |
 | curated dataset pipeline | pending | imitation replay dataset | pending | n/a | n/a | n/a | n/a | n/a | research | Dataset curation for STOP reduction, bomb representation, endgame weighting, and episode caps. |
 | policy bias analysis initialized | pending | tiny imitation checkpoint | pending | n/a | n/a | n/a | n/a | n/a | research | Policy entropy, prediction distribution, movement diversity, and STOP/PLACE_BOMB confusion analysis. |
+| imitation hyperparameter sweep | pending | curated imitation datasets | pending | n/a | n/a | n/a | n/a | n/a | research | Sweeps class weighting and action-bias knobs using behavior-aware selection score. |

@@ -1,0 +1,19 @@
+{
+  "run_id": 19,
+  "dataset": "balanced",
+  "dataset_path": "ml/datasets/imitation_dataset_balanced.npz",
+  "class_weight_power": 1.0,
+  "bomb_boost_weight": 1.0,
+  "stop_penalty_weight": 1.0,
+  "val_accuracy": 0.11735941320293398,
+  "top2_accuracy": 0.37163814180929094,
+  "entropy_normalized": 0.9857574814823511,
+  "stop_pred_pct": 0.7334963325183375,
+  "bomb_pred_pct": 53.54523227383863,
+  "movement_diversity_pct": 50.0,
+  "max_movement_direction_pct": 28.60635696821516,
+  "selection_score": 0.1187896381057611,
+  "warnings": [
+    "BOMB>12"
+  ]
+}
