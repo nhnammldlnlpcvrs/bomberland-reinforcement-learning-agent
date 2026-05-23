@@ -58,3 +58,11 @@ Dataset flow:
 5. Save compressed `.npz` files for future supervised imitation learning.
 
 PPO is still not the next step. Before PPO, collect cleaner datasets, train a small CNN policy to imitate the heuristic, and evaluate it behind the deterministic safety filter. The future CNN policy should rank safe actions; it should not own safety decisions.
+
+## Imitation Learning Baseline
+
+The first learned baseline is supervised behavior cloning from the online-robust heuristic teacher. The model uses the replay dataset tensors and predicts one of the six Bomberland actions with cross-entropy loss.
+
+This comes before PPO because it verifies that replay parsing, feature encoding, action labels, and class balance are usable. A tiny CNN can expose dataset problems quickly without introducing reward-design instability or self-play variance.
+
+Future deployment should stay hybrid: the neural policy ranks candidate actions, then the deterministic safety layer applies action masks, bomb escape validation, and fallback to the heuristic agent.
