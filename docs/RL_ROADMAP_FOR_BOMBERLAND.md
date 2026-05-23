@@ -66,3 +66,11 @@ The first learned baseline is supervised behavior cloning from the online-robust
 This comes before PPO because it verifies that replay parsing, feature encoding, action labels, and class balance are usable. A tiny CNN can expose dataset problems quickly without introducing reward-design instability or self-play variance.
 
 Future deployment should stay hybrid: the neural policy ranks candidate actions, then the deterministic safety layer applies action masks, bomb escape validation, and fallback to the heuristic agent.
+
+## Dataset Curation and Policy Bias
+
+Teacher policies have bias. A strong survival heuristic can still produce replay datasets that are draw-heavy, STOP-heavy, or sparse in meaningful `PLACE_BOMB` examples. If copied directly, the neural policy can learn passive survival instead of useful action ranking.
+
+Before PPO or DQN work, curate the imitation dataset and measure policy behavior. Track action distribution, win/draw/loss mix, bomb ratio, STOP ratio, prediction entropy, movement diversity, and confusion around `PLACE_BOMB`.
+
+Curated datasets should improve training signal without forcing aggression. The goal is not bomb spam; it is enough meaningful bomb representation for the supervised model to learn when bomb actions are plausible. Policy entropy matters because low-entropy collapse can hide behind acceptable accuracy.

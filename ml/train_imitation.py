@@ -133,7 +133,8 @@ def train_imitation(args):
         print("PyTorch not installed, skipping training.")
         return None
 
-    observations, actions, outcomes, metadata = _load_dataset(args.dataset)
+    dataset_path = args.curated_dataset or args.dataset
+    observations, actions, outcomes, metadata = _load_dataset(dataset_path)
     observations, actions, outcomes = _filter_dataset(
         observations,
         actions,
@@ -148,7 +149,7 @@ def train_imitation(args):
     if observations.shape[1:] != (12, 13, 13):
         raise RuntimeError(f"Expected observations shaped (N, 12, 13, 13), got {observations.shape}")
 
-    print(f"dataset: {args.dataset}")
+    print(f"dataset: {dataset_path}")
     print(f"samples: {len(actions)}")
     print(f"observation shape: {observations.shape}")
     print(f"action shape: {actions.shape}")
@@ -164,7 +165,10 @@ def train_imitation(args):
     val_dataset = TensorDataset(x_val, y_val)
 
     class_counts = torch.tensor(_action_counts(actions), dtype=torch.float32)
-    class_weights = class_counts.sum() / (len(ACTION_NAMES) * torch.clamp(class_counts, min=1.0))
+    base_weights = class_counts.sum() / (len(ACTION_NAMES) * torch.clamp(class_counts, min=1.0))
+    class_weights = torch.pow(base_weights, float(args.class_weight_power))
+    class_weights[5] *= float(args.bomb_boost_weight)
+    class_weights[0] *= float(args.stop_penalty_weight)
     loss_weights = None if args.balanced_actions else class_weights
     loss_fn = torch.nn.CrossEntropyLoss(weight=loss_weights)
 
@@ -234,7 +238,7 @@ def train_imitation(args):
                     "channel_names": list(CHANNEL_NAMES),
                     "action_names": list(ACTION_NAMES),
                     "action_counts": counts.tolist(),
-                    "dataset_path": str(args.dataset),
+                    "dataset_path": str(dataset_path),
                     "metadata": metadata,
                     "best_metrics": best_metrics,
                     "filters": {
@@ -242,6 +246,9 @@ def train_imitation(args):
                         "exclude_draws": args.exclude_draws,
                         "max_samples": args.max_samples,
                         "balanced_actions": args.balanced_actions,
+                        "class_weight_power": args.class_weight_power,
+                        "bomb_boost_weight": args.bomb_boost_weight,
+                        "stop_penalty_weight": args.stop_penalty_weight,
                     },
                 },
                 output_path,
@@ -262,6 +269,7 @@ def train_imitation(args):
 def main():
     parser = argparse.ArgumentParser(description="Train a tiny Bomberland imitation policy.")
     parser.add_argument("--dataset", required=True)
+    parser.add_argument("--curated_dataset", default=None)
     parser.add_argument("--epochs", type=int, default=5)
     parser.add_argument("--batch_size", type=int, default=128)
     parser.add_argument("--output", required=True)
@@ -271,6 +279,9 @@ def main():
     parser.add_argument("--exclude_draws", type=str2bool, default=False)
     parser.add_argument("--max_samples", type=int, default=None)
     parser.add_argument("--balanced_actions", type=str2bool, default=False)
+    parser.add_argument("--class_weight_power", type=float, default=1.0)
+    parser.add_argument("--bomb_boost_weight", type=float, default=1.0)
+    parser.add_argument("--stop_penalty_weight", type=float, default=1.0)
     args = parser.parse_args()
     train_imitation(args)
 
