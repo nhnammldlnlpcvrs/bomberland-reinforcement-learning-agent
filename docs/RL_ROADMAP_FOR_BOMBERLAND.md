@@ -74,3 +74,9 @@ Teacher policies have bias. A strong survival heuristic can still produce replay
 Before PPO or DQN work, curate the imitation dataset and measure policy behavior. Track action distribution, win/draw/loss mix, bomb ratio, STOP ratio, prediction entropy, movement diversity, and confusion around `PLACE_BOMB`.
 
 Curated datasets should improve training signal without forcing aggression. The goal is not bomb spam; it is enough meaningful bomb representation for the supervised model to learn when bomb actions are plausible. Policy entropy matters because low-entropy collapse can hide behind acceptable accuracy.
+
+## Neural-Prior Hybrid Evaluation
+
+The next research step is not raw action cloning. Build datasets that contain only valid/safe candidate actions, then train a neural prior to rank those actions. The heuristic safety layer remains authoritative: invalid moves and unsafe bombs are excluded before the neural model is consulted.
+
+Evaluation should measure ranking accuracy among safe actions, top-2 safe agreement, entropy, movement diversity, and bomb preference when bomb is available. This keeps the model aligned with future hybrid deployment: neural scores can help order safe choices, but they must not replace bomb escape validation or danger-map rules.

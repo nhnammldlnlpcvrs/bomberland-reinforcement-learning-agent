@@ -12,3 +12,4 @@ Values marked `approx` are approximate and should be replaced with measured resu
 | curated dataset pipeline | pending | imitation replay dataset | pending | n/a | n/a | n/a | n/a | n/a | research | Dataset curation for STOP reduction, bomb representation, endgame weighting, and episode caps. |
 | policy bias analysis initialized | pending | tiny imitation checkpoint | pending | n/a | n/a | n/a | n/a | n/a | research | Policy entropy, prediction distribution, movement diversity, and STOP/PLACE_BOMB confusion analysis. |
 | imitation hyperparameter sweep | pending | curated imitation datasets | pending | n/a | n/a | n/a | n/a | n/a | research | Sweeps class weighting and action-bias knobs using behavior-aware selection score. |
+| neural-prior action ranking | pending | safe-action masked replay dataset | pending | n/a | n/a | n/a | n/a | n/a | research | Trains a CNN prior to rank heuristic-safe actions without deploying it into production. |
