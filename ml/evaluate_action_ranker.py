@@ -84,11 +84,15 @@ def evaluate_action_ranker(args):
     bomb_preference = pred_counts[5] / max(1, safe_counts[5]) if safe_counts[5] else 0.0
     movement_preds = pred_counts[1:5].sum()
     movement_diversity = np.count_nonzero(pred_counts[1:5] > 0) / 4.0
+    direction_total = max(1, int(movement_preds))
     print("\nBehavior metrics:")
     print(f"safe_bomb_available: {safe_bomb_available * 100.0:.1f}%")
     print(f"bomb_preference_when_safe: {bomb_preference * 100.0:.1f}%")
     print(f"movement_prediction_diversity: {movement_diversity * 100.0:.1f}%")
     print(f"movement_predictions: {100.0 * movement_preds / max(1, total):.1f}%")
+    print("directional prediction distribution:")
+    for idx in range(1, 5):
+        print(f"  {ACTION_NAMES[idx]}: {100.0 * pred_counts[idx] / direction_total:.1f}% of moves")
 
     warnings = []
     stop_pct = 100.0 * pred_counts[0] / max(1, total)

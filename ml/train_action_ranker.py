@@ -6,6 +6,8 @@ from pathlib import Path
 
 import numpy as np
 
+from ml.augment_dataset import _augment_masks, _augment_observations, _remap_action_array
+from ml.dataset_builder import str2bool
 from ml.models.simple_cnn_policy import TORCH_AVAILABLE, build_model
 from ml.train_imitation import ACTION_NAMES
 
@@ -46,6 +48,21 @@ def load_ranking_dataset(path, max_samples=None, seed=42):
         targets = targets[idx]
         masks = masks[idx]
     return observations, targets, masks, metadata
+
+
+def augment_ranking_arrays(observations, targets, masks, modes=("hflip", "vflip", "rot180")):
+    obs_parts = [observations]
+    target_parts = [targets]
+    mask_parts = [masks]
+    for mode in modes:
+        obs_parts.append(_augment_observations(observations, mode))
+        target_parts.append(_remap_action_array(targets, mode))
+        mask_parts.append(_augment_masks(masks, mode))
+    return (
+        np.concatenate(obs_parts, axis=0).astype(np.float32),
+        np.concatenate(target_parts, axis=0).astype(np.int64),
+        np.concatenate(mask_parts, axis=0).astype(bool),
+    )
 
 
 def split_indices(total, val_ratio=0.1, seed=42):
@@ -115,6 +132,10 @@ def train_action_ranker(args):
         max_samples=args.max_samples,
         seed=args.seed,
     )
+    if args.augment_symmetry:
+        observations, targets, masks = augment_ranking_arrays(observations, targets, masks)
+        metadata = dict(metadata)
+        metadata["train_augment_symmetry"] = True
     train_idx, val_idx = split_indices(len(targets), seed=args.seed)
     device = torch.device("cpu")
 
@@ -204,6 +225,7 @@ def main():
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--max_samples", type=int, default=None)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--augment_symmetry", type=str2bool, default=False)
     args = parser.parse_args()
     train_action_ranker(args)
 
