@@ -2,6 +2,8 @@ import os
 import random
 import argparse
 import sys
+import json
+from datetime import datetime
 from pathlib import Path
 
 parent_dir = Path(__file__).resolve().parent.parent
@@ -94,7 +96,57 @@ def make_agents(agent_paths, seed=None):
     return agents, names
 
 
-def run_match(agent_paths, num_episodes=10, max_steps=500, seed=None):
+def _obs_snapshot(obs, step, actions=None):
+    return {
+        "step": int(step),
+        "actions": None if actions is None else [int(action) for action in actions],
+        "alive": [bool(player[2]) for player in obs["players"]],
+        "map": obs["map"].tolist(),
+        "board": obs["map"].tolist(),
+        "grid": obs["map"].tolist(),
+        "players": obs["players"].tolist(),
+        "bombs": obs["bombs"].tolist(),
+        "flames": [],
+        "explosions": [],
+    }
+
+
+def _final_ranks(n_players, death_groups, survivors):
+    ranks = [0] * n_players
+    ordered_groups = list(death_groups)
+    if survivors:
+        ordered_groups.append(list(survivors))
+    for rank, group in enumerate(reversed(ordered_groups)):
+        for player_id in group:
+            ranks[player_id] = rank
+    return ranks
+
+
+def _save_replay(log_dir, seed, episode, names, ranks, survival_steps, total_steps, history):
+    json_dir = Path(log_dir) / "json"
+    json_dir.mkdir(parents=True, exist_ok=True)
+
+    seed_part = "none" if seed is None else str(seed)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    path = json_dir / f"match_{timestamp}_{seed_part}.json"
+    payload = {
+        "seed": seed,
+        "episode": episode,
+        "team_ids": names,
+        "agents": names,
+        "meta": {"agent_names": names},
+        "ranks": ranks,
+        "survival_steps": survival_steps,
+        "total_steps": int(total_steps),
+        "history": history,
+        "frames": history,
+    }
+    with path.open("w", encoding="utf-8") as handle:
+        json.dump(payload, handle)
+    return path
+
+
+def run_match(agent_paths, num_episodes=10, max_steps=500, seed=None, save_logs=True, log_dir="logs"):
     env = BomberEnv(max_steps=max_steps, seed=seed)
     n_players = len(agent_paths)
     
@@ -107,7 +159,10 @@ def run_match(agent_paths, num_episodes=10, max_steps=500, seed=None):
         done = False
         step = 0
         death_order = []
+        death_groups = []
+        survival_steps = [0] * n_players
         prev_alive = [bool(p[2]) for p in obs["players"]]
+        history = [_obs_snapshot(obs, step, actions=None)] if save_logs else []
 
         while not done and step < max_steps:
             actions = []
@@ -122,15 +177,25 @@ def run_match(agent_paths, num_episodes=10, max_steps=500, seed=None):
             obs, terminated, truncated = env.step(actions)
             done = terminated or truncated
             step += 1
+            if save_logs:
+                history.append(_obs_snapshot(obs, step, actions=actions))
 
             alive_now = [bool(p[2]) for p in obs["players"]]
+            deaths_this_step = []
             for i in range(n_players):
                 if prev_alive[i] and not alive_now[i]:
                     death_order.append(info[i]["name"])
+                    deaths_this_step.append(i)
+                    survival_steps[i] = step
+            if deaths_this_step:
+                death_groups.append(deaths_this_step)
             prev_alive = alive_now
         
         alive_final = [bool(p[2]) for p in obs["players"]]
         survivors = [i for i in range(n_players) if alive_final[i]]
+        for player_id in survivors:
+            survival_steps[player_id] = step
+        ranks = _final_ranks(n_players, death_groups, survivors)
         
         if len(survivors) == 1:
             winner = survivors[0]
@@ -138,6 +203,18 @@ def run_match(agent_paths, num_episodes=10, max_steps=500, seed=None):
             print(f"Episode {episode + 1}: {info[winner]['name']} wins | Died: {death_order}")
         else:
             print(f"Episode {episode + 1}: Draw | Died: {death_order}")
+
+        if save_logs:
+            _save_replay(
+                log_dir=log_dir,
+                seed=episode_seed,
+                episode=episode,
+                names=names,
+                ranks=ranks,
+                survival_steps=survival_steps,
+                total_steps=step,
+                history=history,
+            )
 
     print("\n=== Summary ===")
     for i in range(n_players):
@@ -153,6 +230,8 @@ if __name__ == "__main__":
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--visualize", type=str2bool, default=False)
     parser.add_argument("--autoplay", type=str2bool, default=True)
+    parser.add_argument("--save_logs", type=str2bool, default=True)
+    parser.add_argument("--log_dir", default="logs")
     args = parser.parse_args()
     
     if args.visualize:
@@ -170,5 +249,7 @@ if __name__ == "__main__":
             agent_paths=args.agent_paths,
             num_episodes=args.num_episodes,
             max_steps=args.max_steps,
-            seed=args.seed
+            seed=args.seed,
+            save_logs=args.save_logs,
+            log_dir=args.log_dir,
         )
