@@ -4,7 +4,11 @@ import argparse
 import numpy as np
 
 from ml.models.simple_cnn_policy import TORCH_AVAILABLE, load_checkpoint
-from ml.train_action_ranker import load_ranking_dataset, ranking_metrics
+from ml.train_action_ranker import (
+    behavior_score_from_counts,
+    load_ranking_dataset,
+    ranking_metrics,
+)
 from ml.train_imitation import ACTION_NAMES
 
 
@@ -51,6 +55,13 @@ def evaluate_action_ranker(args):
     target_tensor = torch.cat(targets_all)
     mask_tensor = torch.cat(masks_all)
     metrics = ranking_metrics(logits, target_tensor, mask_tensor)
+    behavior = behavior_score_from_counts(
+        metrics,
+        target_bomb_pred_min=args.target_bomb_pred_min,
+        target_bomb_pred_max=args.target_bomb_pred_max,
+        target_stop_pred_max=args.target_stop_pred_max,
+    )
+    metrics.update(behavior)
     masked_logits = logits.masked_fill(~mask_tensor, -1e9)
     preds = masked_logits.argmax(dim=1).numpy()
     target_np = target_tensor.numpy()
@@ -68,6 +79,7 @@ def evaluate_action_ranker(args):
     print(f"ranking_accuracy: {metrics['ranking_accuracy']:.4f}")
     print(f"top2_safe_agreement: {metrics['top2_safe_agreement']:.4f}")
     print(f"entropy_normalized: {metrics['entropy_normalized']:.4f}")
+    print(f"behavior_score: {metrics['behavior_score']:.4f}")
     print(f"checkpoint best_metrics: {checkpoint.get('best_metrics')}")
 
     print("\nTarget vs prediction distribution:")
@@ -93,6 +105,7 @@ def evaluate_action_ranker(args):
     print("directional prediction distribution:")
     for idx in range(1, 5):
         print(f"  {ACTION_NAMES[idx]}: {100.0 * pred_counts[idx] / direction_total:.1f}% of moves")
+    print(f"max_movement_direction: {metrics['max_direction_pct']:.1f}%")
 
     warnings = []
     stop_pct = 100.0 * pred_counts[0] / max(1, total)
@@ -103,15 +116,34 @@ def evaluate_action_ranker(args):
         warnings.append("bomb-heavy neural prior")
     if safe_counts[5] and bomb_preference < 0.02:
         warnings.append("neural prior almost never ranks safe bombs first")
-    if movement_preds and pred_counts[1:5].max() / movement_preds > 0.70:
+    if movement_preds and pred_counts[1:5].max() / movement_preds > 0.50:
         warnings.append("directional movement collapse")
+    warnings.extend(metrics.get("warnings", []))
+
+    unique_warnings = []
+    for warning in warnings:
+        if warning not in unique_warnings:
+            unique_warnings.append(warning)
 
     print("\nWarnings:")
-    if warnings:
-        for warning in warnings:
+    if unique_warnings:
+        for warning in unique_warnings:
             print(f"WARNING: {warning}")
     else:
         print("none")
+
+    print("\nDeployability:")
+    if (
+        metrics["top2_safe_agreement"] >= 0.70
+        and metrics["bomb_pred_pct"] >= 3.0
+        and metrics["bomb_pred_pct"] <= 10.0
+        and metrics["stop_pred_pct"] <= 35.0
+        and metrics["max_direction_pct"] <= 55.0
+        and metrics["entropy_normalized"] > 0.50
+    ):
+        print("research-pass: suitable for further offline hybrid-prior testing, not production deployment")
+    else:
+        print("research-only: behavior constraints are not all satisfied")
     return metrics
 
 
@@ -122,6 +154,9 @@ def main():
     parser.add_argument("--batch_size", type=int, default=256)
     parser.add_argument("--max_samples", type=int, default=None)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--target_bomb_pred_min", type=float, default=0.03)
+    parser.add_argument("--target_bomb_pred_max", type=float, default=0.10)
+    parser.add_argument("--target_stop_pred_max", type=float, default=0.30)
     args = parser.parse_args()
     evaluate_action_ranker(args)
 

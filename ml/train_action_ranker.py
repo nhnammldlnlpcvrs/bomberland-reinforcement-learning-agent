@@ -78,6 +78,102 @@ def masked_cross_entropy(logits, targets, masks):
     return torch.nn.functional.cross_entropy(masked_logits, targets)
 
 
+def plain_cross_entropy(logits, targets, masks):
+    del masks
+    return torch.nn.functional.cross_entropy(logits, targets)
+
+
+def masked_label_smoothing_loss(logits, targets, masks, smoothing=0.05):
+    masked_logits = logits.masked_fill(~masks, -1e9)
+    log_probs = torch.nn.functional.log_softmax(masked_logits, dim=1)
+    valid_counts = masks.sum(dim=1).clamp(min=1).float()
+    smooth = torch.zeros_like(logits)
+    smooth = smooth.masked_fill(masks, 1.0)
+    smooth = smooth / valid_counts.unsqueeze(1)
+    hard = torch.zeros_like(logits)
+    hard.scatter_(1, targets.unsqueeze(1), 1.0)
+    single_action = valid_counts <= 1
+    target_dist = (1.0 - float(smoothing)) * hard + float(smoothing) * smooth
+    target_dist[single_action] = hard[single_action]
+    return -torch.sum(target_dist * log_probs, dim=1).mean()
+
+
+def ranking_loss(logits, targets, masks, loss_mode="masked_ce", label_smoothing=0.05):
+    if loss_mode == "ce":
+        return plain_cross_entropy(logits, targets, masks)
+    if loss_mode == "masked_ce":
+        return masked_cross_entropy(logits, targets, masks)
+    if loss_mode == "label_smoothing":
+        return masked_label_smoothing_loss(logits, targets, masks, smoothing=label_smoothing)
+    raise ValueError(f"unknown loss_mode: {loss_mode}")
+
+
+def behavior_regularization_loss(logits, targets, masks, target_bomb_pred_min=0.03,
+                                 target_bomb_pred_max=0.10,
+                                 target_stop_pred_max=0.30,
+                                 stop_margin=0.05):
+    masked_logits = logits.masked_fill(~masks, -1e9)
+    probs = torch.softmax(masked_logits, dim=1)
+    stop_mean = probs[:, 0].mean()
+    bomb_mean = probs[:, 5].mean()
+    movement = probs[:, 1:5].mean(dim=0)
+    movement_total = movement.sum().clamp(min=1e-6)
+    direction_share = movement / movement_total
+    max_direction = direction_share.max()
+    penalty = torch.relu(stop_mean - float(target_stop_pred_max)) ** 2
+    penalty = penalty + torch.relu(float(target_bomb_pred_min) - bomb_mean) ** 2
+    penalty = penalty + torch.relu(bomb_mean - float(target_bomb_pred_max)) ** 2
+    penalty = penalty + torch.relu(max_direction - 0.50) ** 2
+    non_stop = (targets != 0) & masks[:, 0]
+    if torch.any(non_stop):
+        stop_logits = logits[non_stop, 0]
+        target_logits = logits[non_stop].gather(1, targets[non_stop].unsqueeze(1)).squeeze(1)
+        penalty = penalty + torch.mean(torch.relu(stop_logits - target_logits + float(stop_margin)) ** 2)
+    return penalty
+
+
+def behavior_score_from_counts(metrics, target_bomb_pred_min=0.03,
+                               target_bomb_pred_max=0.10,
+                               target_stop_pred_max=0.30):
+    pred_counts = np.asarray(metrics["prediction_counts"], dtype=np.float64)
+    total = max(1.0, float(pred_counts.sum()))
+    pred_pct = pred_counts / total
+    movement = pred_counts[1:5]
+    movement_total = max(1.0, float(movement.sum()))
+    max_direction = float(movement.max() / movement_total) if movement_total else 0.0
+
+    penalties = 0.0
+    warnings = []
+    bomb_pct = float(pred_pct[5])
+    stop_pct = float(pred_pct[0])
+    if bomb_pct < target_bomb_pred_min:
+        penalties += min(0.30, target_bomb_pred_min - bomb_pct)
+        warnings.append("BOMB_BELOW_RANGE")
+    if bomb_pct > target_bomb_pred_max:
+        penalties += min(0.40, bomb_pct - target_bomb_pred_max)
+        warnings.append("BOMB_ABOVE_RANGE")
+    if stop_pct > target_stop_pred_max:
+        penalties += min(0.35, stop_pct - target_stop_pred_max)
+        warnings.append("STOP_OVERUSE")
+    if max_direction > 0.50:
+        penalties += min(0.35, max_direction - 0.50)
+        warnings.append("DIRECTION_COLLAPSE")
+
+    score = (
+        float(metrics["top2_safe_agreement"])
+        + 0.1 * float(metrics["entropy_normalized"])
+        - penalties
+    )
+    return {
+        "behavior_score": float(score),
+        "penalties": float(penalties),
+        "warnings": warnings,
+        "stop_pred_pct": float(stop_pct * 100.0),
+        "bomb_pred_pct": float(bomb_pct * 100.0),
+        "max_direction_pct": float(max_direction * 100.0),
+    }
+
+
 def ranking_metrics(logits, targets, masks):
     masked_logits = logits.masked_fill(~masks, -1e9)
     probs = torch.softmax(masked_logits, dim=1)
@@ -160,7 +256,7 @@ def train_action_ranker(args):
     model = build_model(input_channels=12, num_actions=len(ACTION_NAMES)).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
 
-    best_loss = float("inf")
+    best_score = -float("inf")
     best_metrics = None
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -177,21 +273,45 @@ def train_action_ranker(args):
             batch_masks = batch_masks.to(device)
             optimizer.zero_grad(set_to_none=True)
             logits = model(obs)
-            loss = masked_cross_entropy(logits, batch_targets, batch_masks)
+            loss = ranking_loss(
+                logits,
+                batch_targets,
+                batch_masks,
+                loss_mode=args.loss_mode,
+                label_smoothing=args.label_smoothing,
+            )
+            if args.behavior_reg_weight > 0:
+                loss = loss + float(args.behavior_reg_weight) * behavior_regularization_loss(
+                    logits,
+                    batch_targets,
+                    batch_masks,
+                    target_bomb_pred_min=args.target_bomb_pred_min,
+                    target_bomb_pred_max=args.target_bomb_pred_max,
+                    target_stop_pred_max=args.target_stop_pred_max,
+                    stop_margin=args.stop_margin,
+                )
             loss.backward()
             optimizer.step()
             train_loss += float(loss.item()) * int(batch_targets.shape[0])
             train_seen += int(batch_targets.shape[0])
 
         metrics = evaluate_model(model, val_loader, device)
+        behavior = behavior_score_from_counts(
+            metrics,
+            target_bomb_pred_min=args.target_bomb_pred_min,
+            target_bomb_pred_max=args.target_bomb_pred_max,
+            target_stop_pred_max=args.target_stop_pred_max,
+        )
+        metrics.update(behavior)
         avg_train_loss = train_loss / max(1, train_seen)
         print(
             f"epoch {epoch}: train_loss={avg_train_loss:.4f} "
             f"val_loss={metrics['loss']:.4f} rank_acc={metrics['ranking_accuracy']:.4f} "
-            f"top2_safe={metrics['top2_safe_agreement']:.4f} entropy={metrics['entropy_normalized']:.4f}"
+            f"top2_safe={metrics['top2_safe_agreement']:.4f} entropy={metrics['entropy_normalized']:.4f} "
+            f"behavior_score={metrics['behavior_score']:.4f} warnings={','.join(metrics['warnings']) or 'none'}"
         )
-        if metrics["loss"] < best_loss:
-            best_loss = metrics["loss"]
+        if metrics["behavior_score"] > best_score:
+            best_score = metrics["behavior_score"]
             best_metrics = dict(metrics)
             if hasattr(best_metrics.get("prediction_counts"), "tolist"):
                 best_metrics["prediction_counts"] = best_metrics["prediction_counts"].tolist()
@@ -206,6 +326,16 @@ def train_action_ranker(args):
                     "metadata": metadata,
                     "best_metrics": best_metrics,
                     "mode": "safe_action_ranker",
+                    "training_options": {
+                        "loss_mode": args.loss_mode,
+                        "label_smoothing": args.label_smoothing,
+                        "target_bomb_pred_min": args.target_bomb_pred_min,
+                        "target_bomb_pred_max": args.target_bomb_pred_max,
+                        "target_stop_pred_max": args.target_stop_pred_max,
+                        "behavior_reg_weight": args.behavior_reg_weight,
+                        "stop_margin": args.stop_margin,
+                        "augment_symmetry": args.augment_symmetry,
+                    },
                 },
                 output,
             )
@@ -226,6 +356,13 @@ def main():
     parser.add_argument("--max_samples", type=int, default=None)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--augment_symmetry", type=str2bool, default=False)
+    parser.add_argument("--loss_mode", choices=("ce", "masked_ce", "label_smoothing"), default="masked_ce")
+    parser.add_argument("--label_smoothing", type=float, default=0.05)
+    parser.add_argument("--target_bomb_pred_min", type=float, default=0.03)
+    parser.add_argument("--target_bomb_pred_max", type=float, default=0.10)
+    parser.add_argument("--target_stop_pred_max", type=float, default=0.30)
+    parser.add_argument("--behavior_reg_weight", type=float, default=1.0)
+    parser.add_argument("--stop_margin", type=float, default=0.05)
     args = parser.parse_args()
     train_action_ranker(args)
 

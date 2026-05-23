@@ -68,3 +68,39 @@ Next recommended training run:
 - Sweep `class_weight_power` between 0.6 and 0.9.
 - Keep `bomb_boost_weight` near 0.8-1.0.
 - Track entropy and prediction distribution before considering larger models.
+
+## Action Ranker Behavior-Aware Training
+
+The action ranker is a neural prior over heuristic-safe actions, not a replacement for safety. It now supports:
+
+- `masked_ce`: cross entropy after masking unsafe actions.
+- `label_smoothing`: masked target smoothing over safe actions to reduce overconfidence.
+- behavior-aware checkpoint selection.
+- optional behavior regularization during training for STOP, bomb, and direction ranges.
+
+The behavior score is:
+
+`top2_safe_agreement + 0.1 * entropy_normalized - bomb_range_penalty - stop_overuse_penalty - direction_collapse_penalty`
+
+Recommended pass criteria for research-only offline testing:
+
+- top-2 safe agreement at least 70%.
+- `PLACE_BOMB` prediction between 3% and 10%.
+- STOP prediction at most 35%.
+- no movement direction above 55%.
+- entropy not collapsed.
+
+Even if these pass, the model is not deployable directly. It still requires deterministic safety masks and a heuristic fallback.
+
+Latest smoke run with symmetry augmentation, masked label smoothing, and STOP margin regularization:
+
+| Metric | Value |
+|---|---:|
+| ranking accuracy | 58.99% |
+| top-2 safe agreement | 82.24% |
+| normalized entropy | 0.787 |
+| STOP prediction | 21.7% |
+| PLACE_BOMB prediction | 6.7% |
+| max movement direction | 31.2% |
+
+This passes the offline research thresholds for a neural prior. It is still not production-ready: bomb actions were only marked safe when the heuristic selected bomb in the replay, so bomb preference needs a richer safe-bomb candidate generator before deployment experiments.
