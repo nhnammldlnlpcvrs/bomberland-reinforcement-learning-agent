@@ -1,0 +1,55 @@
+{
+  "mcpServers": {
+    "filesystem": {
+      "type": "stdio",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-filesystem",
+        "D:/Giselle_/GDGoC Challenge HCMUS/bomberland-reinforcement-learning-agent"
+      ],
+      "allowedDirectories": [
+        "agent/",
+        "submission/",
+        "logs/",
+        "ckpts/",
+        "scripts/",
+        "engine/"
+      ],
+      "env": {
+        "NODE_ENV": "production"
+      }
+    },
+    "fetch": {
+      "type": "stdio",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-fetch"
+      ]
+    },
+    "bomberland-sim": {
+      "type": "stdio",
+      "command": "python",
+      "args": [
+        "-m",
+        "scripts.participant.mcp_sim_server"
+      ],
+      "env": {
+        "PYTHONPATH": "D:/Giselle_/GDGoC Challenge HCMUS/bomberland-reinforcement-learning-agent",
+        "PYTHONUNBUFFERED": "1"
+      }
+    },
+    "ide": {
+      "type": "ws",
+      "url": "http://localhost:3000/mcp"
+    }
+  },
+  "defaultEnabledServers": [
+    "filesystem",
+    "fetch",
+    "ide"
+  ],
+  "serverTimeout": 30000,
+  "toolCallTimeout": 10000
+}

@@ -82,6 +82,11 @@ EXPANSION_SCORE_MULTIPLIER = 0.45
 LOOP_EXPANSION_SCORE_MULTIPLIER = 0.75
 TERRITORY_PRESSURE_MULTIPLIER = 0.5
 ACTION_ADVANTAGE_WEIGHT = 0.15
+TERRITORY_AREA_DEPTH = 6
+TERRITORY_AREA_ADVANTAGE_THRESHOLD = 4
+TERRITORY_BOMB_PRESSURE_BONUS = 90
+LATE_TERRITORY_BOX_BONUS = 100
+LATE_TERRITORY_STEP = 430
 
 
 # ==============================================================================
@@ -312,6 +317,85 @@ def _controlled_expansion_score(pos, game_map, bomb_set, danger_time,
     if cache is not None:
         cache[key] = score
     return score
+
+
+def _reachable_safe_cells(start, game_map, bomb_set, danger_time,
+                          max_depth=TERRITORY_AREA_DEPTH):
+    """Count safe cells reachable from start within a small depth limit."""
+    if danger_time[start[0], start[1]] <= 1:
+        return 0
+
+    q = deque()
+    q.append((start, 0))
+    visited = {start}
+    safe_count = 0
+
+    while q:
+        pos, dist = q.popleft()
+        r, c = pos
+        if danger_time[r, c] <= dist + 1:
+            continue
+
+        safe_count += 1
+        if dist >= max_depth:
+            continue
+
+        for action in MOVE_ACTIONS:
+            dr, dc = DIRS[action]
+            nr, nc = r + dr, c + dc
+            npos = (nr, nc)
+            if npos in visited:
+                continue
+            if not _is_passable(nr, nc, game_map, bomb_set):
+                continue
+            visited.add(npos)
+            q.append((npos, dist + 1))
+
+    return safe_count
+
+
+def _territory_pressure_context(my_pos, obs, danger_time, agent_id):
+    """Return compact territory advantage signals for conditional bomb pressure."""
+    game_map = obs["map"]
+    players = obs["players"]
+    bomb_set = _bomb_set(obs["bombs"])
+    my_area = _reachable_safe_cells(
+        my_pos, game_map, bomb_set, danger_time, TERRITORY_AREA_DEPTH
+    )
+
+    enemy_areas = []
+    low_enemy_mobility = False
+    for i, p in enumerate(players):
+        if i == agent_id or int(p[2]) != 1:
+            continue
+        enemy_pos = (int(p[0]), int(p[1]))
+        enemy_areas.append(
+            _reachable_safe_cells(
+                enemy_pos, game_map, bomb_set, danger_time,
+                TERRITORY_AREA_DEPTH
+            )
+        )
+        if _free_neighbors(enemy_pos, game_map, bomb_set) <= 2:
+            low_enemy_mobility = True
+
+    if not enemy_areas:
+        return {
+            "my_area": my_area,
+            "enemy_area": 0.0,
+            "advantage": my_area,
+            "low_enemy_mobility": False,
+            "positive_advantage": my_area > 0,
+        }
+
+    enemy_area = sum(enemy_areas) / len(enemy_areas)
+    advantage = my_area - enemy_area
+    return {
+        "my_area": my_area,
+        "enemy_area": enemy_area,
+        "advantage": advantage,
+        "low_enemy_mobility": low_enemy_mobility,
+        "positive_advantage": advantage > 0,
+    }
 
 
 def _enemy_territory_pressure(pos, obs, danger_time, agent_id):
@@ -866,7 +950,7 @@ def _score_move(action, my_pos, my_state, game_map, players, bomb_set,
 
 def _score_bomb(my_pos, my_state, game_map, players, bomb_set,
                 danger_time, obs, agent_id, escape_pressure=None,
-                is_loop=False):
+                is_loop=False, territory_context=None, step_count=0):
     """Score the PLACE_BOMB action.  Returns -1e9 if invalid or unsafe."""
     my_r, my_c = my_pos
     _, _, _, bombs_left, bonus = my_state
@@ -908,6 +992,20 @@ def _score_bomb(my_pos, my_state, game_map, players, bomb_set,
     # ----- Enemy escape pressure -----
     score += escape_pressure * ESCAPE_PRESSURE_SCORE_MULTIPLIER
 
+    # ----- Territory-conditioned pressure -----
+    if territory_context is not None:
+        if (
+            territory_context["advantage"] > TERRITORY_AREA_ADVANTAGE_THRESHOLD
+            and territory_context["low_enemy_mobility"]
+        ):
+            score += min(TERRITORY_BOMB_PRESSURE_BONUS, max(40, escape_pressure * 0.08))
+        if (
+            step_count >= LATE_TERRITORY_STEP
+            and territory_context["positive_advantage"]
+            and boxes > 0
+        ):
+            score += LATE_TERRITORY_BOX_BONUS
+
     # ----- Future survivability after bomb -----
     if escape_future_score < -100:
         score -= 300
@@ -948,6 +1046,7 @@ class Agent:
         self.agent_id = int(agent_id)
         self.position_history = []
         self.max_position_history = MAX_POSITION_HISTORY
+        self.step_count = 0
 
     def _maybe_reset_position_history(self, my_pos, bombs):
         spawn_positions = {
@@ -962,6 +1061,7 @@ class Agent:
             and len(self.position_history) > 10
         ):
             self.position_history = []
+            self.step_count = 0
 
     def _update_position_history(self, my_pos):
         self.position_history.append(my_pos)
@@ -978,6 +1078,13 @@ class Agent:
                  or self.position_history.count(self.position_history[-1]) >= 4)
         )
 
+    def _update_step_count(self, obs):
+        obs_step = obs.get("step", obs.get("step_count"))
+        if obs_step is not None:
+            self.step_count = int(obs_step)
+        else:
+            self.step_count += 1
+
     def act(self, obs: dict) -> int:
         self._future_cache = {}
         self._expansion_cache = {}
@@ -992,6 +1099,7 @@ class Agent:
 
         my_pos = (my_r, my_c)
         self._maybe_reset_position_history(my_pos, bombs)
+        self._update_step_count(obs)
         self._update_position_history(my_pos)
         is_loop = self._is_local_loop()
 
@@ -1015,10 +1123,14 @@ class Agent:
                 return safe[0]  # first_action
 
         bomb_escape_pressure = None
+        territory_context = None
         if bombs_left > 0 and my_pos not in bomb_set:
             if _can_escape_after_bomb(obs, self.agent_id, game_map, bomb_set):
                 bomb_escape_pressure = _estimate_enemy_escape_pressure(
                     obs, my_pos, self.agent_id
+                )
+                territory_context = _territory_pressure_context(
+                    my_pos, obs, danger_time, self.agent_id
                 )
 
         # ---- 5. Score all actions ----
@@ -1032,7 +1144,8 @@ class Agent:
                 score = _score_bomb(my_pos, my_state, game_map, players,
                                     bomb_set, danger_time, obs,
                                     self.agent_id, bomb_escape_pressure,
-                                    is_loop)
+                                    is_loop, territory_context,
+                                    self.step_count)
                 pos = my_pos
             else:
                 score, pos = _score_move(action, my_pos, my_state, game_map,

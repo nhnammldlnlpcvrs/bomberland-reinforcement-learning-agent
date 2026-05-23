@@ -81,7 +81,13 @@ EXPANSION_BFS_DEPTH = 5
 EXPANSION_SCORE_MULTIPLIER = 0.45
 LOOP_EXPANSION_SCORE_MULTIPLIER = 0.75
 TERRITORY_PRESSURE_MULTIPLIER = 0.5
-ACTION_ADVANTAGE_WEIGHT = 0.15
+ACTION_ADVANTAGE_WEIGHT = 0.10
+STRATEGIC_CELL_SCORE_MULTIPLIER = 0.45
+LOOP_STRATEGIC_CELL_SCORE_MULTIPLIER = 0.75
+TERRITORY_DIFFERENTIAL_MULTIPLIER = 0.35
+TERRITORY_REACH_DEPTH = 6
+BOMB_TERRITORY_OPEN_BONUS = 80
+BOMB_CENTER_BOX_BONUS = 120
 
 
 # ==============================================================================
@@ -314,6 +320,155 @@ def _controlled_expansion_score(pos, game_map, bomb_set, danger_time,
     return score
 
 
+def _reachable_safe_cells(start, game_map, bomb_set, danger_time, max_depth):
+    """Count safe cells reachable from start within max_depth."""
+    if danger_time[start[0], start[1]] <= 1:
+        return 0
+
+    q = deque()
+    q.append((start, 0))
+    visited = {start}
+    count = 0
+
+    while q:
+        pos, dist = q.popleft()
+        r, c = pos
+        if danger_time[r, c] > dist + 1:
+            count += 1
+        else:
+            continue
+
+        if dist >= max_depth:
+            continue
+
+        for action in MOVE_ACTIONS:
+            dr, dc = DIRS[action]
+            nr, nc = r + dr, c + dc
+            npos = (nr, nc)
+            if npos in visited:
+                continue
+            if not _is_passable(nr, nc, game_map, bomb_set):
+                continue
+            visited.add(npos)
+            q.append((npos, dist + 1))
+
+    return count
+
+
+def _strategic_cell_value(pos, obs, danger_time, cache=None):
+    """Long-term value proxy for safe territory, exits, boxes, and center access."""
+    key = (pos[0], pos[1])
+    if cache is not None and key in cache:
+        return cache[key]
+
+    game_map = obs["map"]
+    bomb_set = _bomb_set(obs["bombs"])
+    q = deque()
+    q.append((pos, 0))
+    visited = {pos}
+    safe_reachable = 0
+    branch_points = 0
+    adjacent_boxes = set()
+    item_cells = 0
+    escape_margin = 0
+
+    while q:
+        cell, dist = q.popleft()
+        r, c = cell
+        cell_danger = danger_time[r, c]
+        if cell_danger <= dist + 1:
+            continue
+
+        safe_reachable += 1
+        if cell_danger >= INF:
+            escape_margin += 3
+        else:
+            escape_margin += max(0, min(3, int(cell_danger) - dist - 1))
+
+        if _free_neighbors(cell, game_map, bomb_set) >= 3:
+            branch_points += 1
+        if game_map[r, c] in (TILE_RADIUS, TILE_CAPACITY):
+            item_cells += 1
+
+        for dr, dc in BLAST_DIRS:
+            ar, ac = r + dr, c + dc
+            if _in_bounds(ar, ac) and game_map[ar, ac] == TILE_BOX:
+                adjacent_boxes.add((ar, ac))
+
+        if dist >= EXPANSION_BFS_DEPTH:
+            continue
+
+        for action in MOVE_ACTIONS:
+            dr, dc = DIRS[action]
+            nr, nc = r + dr, c + dc
+            npos = (nr, nc)
+            if npos in visited:
+                continue
+            if not _is_passable(nr, nc, game_map, bomb_set):
+                continue
+            visited.add(npos)
+            q.append((npos, dist + 1))
+
+    center = (BOARD_SIZE // 2, BOARD_SIZE // 2)
+    dist_center = abs(pos[0] - center[0]) + abs(pos[1] - center[1])
+    center_score = max(0, 80 - 8 * dist_center)
+    escape_margin = min(escape_margin, 12)
+
+    value = 0
+    value += min(safe_reachable, 25) * 5
+    value += min(branch_points, 8) * 10
+    value += min(len(adjacent_boxes), 8) * 12
+    value += item_cells * 30
+    value += center_score * 0.5
+    value += escape_margin * 8
+
+    zone_type = _is_corridor_or_dead_end(pos, game_map, bomb_set)
+    if zone_type == "dead_end":
+        value -= 90
+    elif zone_type == "corridor":
+        value -= 30
+    if danger_time[pos[0], pos[1]] <= 3:
+        value -= 120
+
+    value = max(-180, min(value, 240))
+    if cache is not None:
+        cache[key] = value
+    return value
+
+
+def _territory_differential(my_next_pos, obs, danger_time, agent_id):
+    """Compare my safe area after a move against average enemy safe area."""
+    game_map = obs["map"]
+    bomb_set = _bomb_set(obs["bombs"])
+    my_area = _reachable_safe_cells(
+        my_next_pos, game_map, bomb_set, danger_time, TERRITORY_REACH_DEPTH
+    )
+
+    enemy_areas = []
+    for i, p in enumerate(obs["players"]):
+        if i == agent_id:
+            continue
+        if int(p[2]) != 1:
+            continue
+        enemy_pos = (int(p[0]), int(p[1]))
+        if enemy_pos == my_next_pos:
+            continue
+        enemy_areas.append(
+            _reachable_safe_cells(
+                enemy_pos, game_map, bomb_set, danger_time,
+                TERRITORY_REACH_DEPTH
+            )
+        )
+
+    if not enemy_areas:
+        return 0
+    enemy_area = sum(enemy_areas) / len(enemy_areas)
+    diff = my_area - enemy_area
+    if diff > 0:
+        return min(diff * 4, 120)
+    return max(diff * 3, -90)
+
+
 def _enemy_territory_pressure(pos, obs, danger_time, agent_id):
     """Light positional pressure without forcing risky chases."""
     if danger_time[pos[0], pos[1]] <= 2:
@@ -376,6 +531,44 @@ def _boxes_in_blast(r, c, radius, game_map):
         if game_map[br, bc] == TILE_BOX:
             cnt += 1
     return cnt
+
+
+def _blast_boxes(r, c, radius, game_map):
+    """Return box cells destroyed by a bomb at (r, c)."""
+    boxes = []
+    for br, bc in _blast_cells(r, c, radius, game_map):
+        if game_map[br, bc] == TILE_BOX:
+            boxes.append((br, bc))
+    return boxes
+
+
+def _bomb_opens_center_route(r, c, radius, game_map):
+    """True when a bomb destroys a box that tends toward center/open expansion."""
+    center = (BOARD_SIZE // 2, BOARD_SIZE // 2)
+    current_dist = abs(r - center[0]) + abs(c - center[1])
+    for br, bc in _blast_boxes(r, c, radius, game_map):
+        box_dist = abs(br - center[0]) + abs(bc - center[1])
+        if box_dist <= current_dist or box_dist <= 4:
+            return True
+    return False
+
+
+def _bomb_reachable_area_gain(pos, radius, game_map, bomb_set, danger_time):
+    """Estimate safe area gain after boxes in the bomb blast are removed."""
+    before = _reachable_safe_cells(
+        pos, game_map, bomb_set, danger_time, EXPANSION_BFS_DEPTH
+    )
+    after_map = np.array(game_map, copy=True)
+    changed = False
+    for br, bc in _blast_boxes(pos[0], pos[1], radius, game_map):
+        after_map[br, bc] = TILE_GRASS
+        changed = True
+    if not changed:
+        return 0
+    after = _reachable_safe_cells(
+        pos, after_map, bomb_set, danger_time, EXPANSION_BFS_DEPTH
+    )
+    return after - before
 
 
 def _enemy_in_blast_line(r, c, radius, game_map, players, agent_id):
@@ -738,7 +931,8 @@ def _is_meaningful_bomb(obs, bomb_pos, agent_id, escape_pressure=None):
 def _score_move(action, my_pos, my_state, game_map, players, bomb_set,
                 danger_time, item_targets, box_spots, enemies, obs, agent_id,
                 future_cache=None, expansion_cache=None, is_loop=False,
-                position_history=None):
+                position_history=None, strategic_cache=None,
+                best_strategic_pos=None):
     """Score a movement action (0-4)."""
     my_r, my_c = my_pos
     _, _, _, bombs_left, _ = my_state
@@ -805,18 +999,32 @@ def _score_move(action, my_pos, my_state, game_map, players, bomb_set,
     )
     score += territory_pressure * TERRITORY_PRESSURE_MULTIPLIER
 
+    strategic_value = _strategic_cell_value(
+        npos, obs, danger_time, strategic_cache
+    )
+    if is_loop:
+        score += strategic_value * LOOP_STRATEGIC_CELL_SCORE_MULTIPLIER
+    else:
+        score += strategic_value * STRATEGIC_CELL_SCORE_MULTIPLIER
+
+    if zone_type != "dead_end" and dt > 1:
+        territory_diff = _territory_differential(
+            npos, obs, danger_time, agent_id
+        )
+        score += territory_diff * TERRITORY_DIFFERENTIAL_MULTIPLIER
+
     # ----- Loop breaker -----
     if position_history:
         repeat_count = position_history.count(npos)
         if is_loop:
             if action == A_STOP:
-                score -= 180
+                score -= 200
             if repeat_count > 0:
-                score -= repeat_count * 50
+                score -= repeat_count * 60
             else:
-                score += 100
-            if zone_type == "open":
-                score += 60
+                score += 80
+            if best_strategic_pos is not None and npos == best_strategic_pos:
+                score += 120
 
     # ----- Item pickup -----
     if game_map[nr, nc] in (TILE_RADIUS, TILE_CAPACITY):
@@ -898,6 +1106,13 @@ def _score_bomb(my_pos, my_state, game_map, players, bomb_set,
     # ----- Box destruction -----
     if boxes > 0:
         score += 350 + 80 * boxes
+        if _bomb_opens_center_route(my_r, my_c, radius, game_map):
+            score += BOMB_CENTER_BOX_BONUS
+        area_gain = _bomb_reachable_area_gain(
+            my_pos, radius, game_map, bomb_set, danger_time
+        )
+        if area_gain > 2:
+            score += BOMB_TERRITORY_OPEN_BONUS
         if is_loop:
             score += 100
 
@@ -981,6 +1196,7 @@ class Agent:
     def act(self, obs: dict) -> int:
         self._future_cache = {}
         self._expansion_cache = {}
+        self._strategic_cache = {}
         game_map = obs["map"]
         players = obs["players"]
         bombs = obs["bombs"]
@@ -1026,6 +1242,24 @@ class Agent:
         best_score = -1e9
         raw_scores = {}
         action_positions = {}
+        best_strategic_pos = None
+        best_strategic_value = -1e9
+
+        if is_loop:
+            for action in MOVE_ACTIONS:
+                dr, dc = DIRS[action]
+                nr, nc = my_r + dr, my_c + dc
+                npos = (nr, nc)
+                if not _is_passable(nr, nc, game_map, bomb_set):
+                    continue
+                if danger_time[nr, nc] <= 1:
+                    continue
+                strategic_value = _strategic_cell_value(
+                    npos, obs, danger_time, self._strategic_cache
+                )
+                if strategic_value > best_strategic_value:
+                    best_strategic_value = strategic_value
+                    best_strategic_pos = npos
 
         for action in ALL_ACTIONS:
             if action == A_BOMB:
@@ -1040,7 +1274,9 @@ class Agent:
                                          item_targets, box_spots, enemies, obs,
                                          self.agent_id, self._future_cache,
                                          self._expansion_cache, is_loop,
-                                         self.position_history)
+                                         self.position_history,
+                                         self._strategic_cache,
+                                         best_strategic_pos)
 
             raw_scores[action] = score
             action_positions[action] = pos
@@ -1073,7 +1309,9 @@ class Agent:
                                        item_targets, box_spots, enemies, obs,
                                        self.agent_id, self._future_cache,
                                        self._expansion_cache, is_loop,
-                                       self.position_history)
+                                       self.position_history,
+                                       self._strategic_cache,
+                                       best_strategic_pos)
                 if score > best_move_score:
                     best_move_score = score
             pressure = 0 if bomb_escape_pressure is None else bomb_escape_pressure
@@ -1093,7 +1331,9 @@ class Agent:
                                              obs, self.agent_id,
                                              self._future_cache,
                                              self._expansion_cache, is_loop,
-                                             self.position_history)
+                                             self.position_history,
+                                             self._strategic_cache,
+                                             best_strategic_pos)
                     if score > best_score:
                         best_score = score
                         best_action = action

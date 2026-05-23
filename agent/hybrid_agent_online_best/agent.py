@@ -76,13 +76,6 @@ DEAD_END_PENALTY = 120
 NEAR_ENEMY_PRESSURE_2 = 120
 NEAR_ENEMY_PRESSURE_4 = 60
 
-MAX_POSITION_HISTORY = 12
-EXPANSION_BFS_DEPTH = 5
-EXPANSION_SCORE_MULTIPLIER = 0.45
-LOOP_EXPANSION_SCORE_MULTIPLIER = 0.75
-TERRITORY_PRESSURE_MULTIPLIER = 0.5
-ACTION_ADVANTAGE_WEIGHT = 0.15
-
 
 # ==============================================================================
 # Helpers — bounds / state
@@ -243,110 +236,6 @@ def _future_survivability_score(pos, obs, danger_time,
     if cache is not None:
         cache[key] = score
     return score
-
-
-def _controlled_expansion_score(pos, game_map, bomb_set, danger_time,
-                                max_depth=EXPANSION_BFS_DEPTH, cache=None):
-    """Small long-term value proxy for safe territory and map opening."""
-    key = (pos[0], pos[1])
-    if cache is not None and key in cache:
-        return cache[key]
-
-    q = deque()
-    q.append((pos, 0))
-    visited = {pos}
-    safe_reachable = 0
-    branch_points = 0
-    adjacent_boxes = set()
-    item_cells = 0
-
-    while q:
-        cell, dist = q.popleft()
-        r, c = cell
-
-        if danger_time[r, c] <= dist + 1:
-            continue
-
-        safe_reachable += 1
-        if _free_neighbors(cell, game_map, bomb_set) >= 3:
-            branch_points += 1
-        if game_map[r, c] in (TILE_RADIUS, TILE_CAPACITY):
-            item_cells += 1
-
-        for dr, dc in BLAST_DIRS:
-            ar, ac = r + dr, c + dc
-            if _in_bounds(ar, ac) and game_map[ar, ac] == TILE_BOX:
-                adjacent_boxes.add((ar, ac))
-
-        if dist >= max_depth:
-            continue
-
-        for action in MOVE_ACTIONS:
-            dr, dc = DIRS[action]
-            nr, nc = r + dr, c + dc
-            npos = (nr, nc)
-            if npos in visited:
-                continue
-            if not _is_passable(nr, nc, game_map, bomb_set):
-                continue
-            visited.add(npos)
-            q.append((npos, dist + 1))
-
-    score = 0
-    score += min(safe_reachable, 25) * 5
-    score += min(branch_points, 8) * 10
-    score += min(len(adjacent_boxes), 8) * 14
-    score += item_cells * 35
-
-    center = (BOARD_SIZE // 2, BOARD_SIZE // 2)
-    dist_center = abs(pos[0] - center[0]) + abs(pos[1] - center[1])
-    score += max(0, 40 - 5 * dist_center)
-
-    zone_type = _is_corridor_or_dead_end(pos, game_map, bomb_set)
-    if zone_type == "dead_end":
-        score -= 80
-    elif zone_type == "corridor":
-        score -= 25
-
-    score = max(-150, min(score, 220))
-    if cache is not None:
-        cache[key] = score
-    return score
-
-
-def _enemy_territory_pressure(pos, obs, danger_time, agent_id):
-    """Light positional pressure without forcing risky chases."""
-    if danger_time[pos[0], pos[1]] <= 2:
-        return 0
-
-    game_map = obs["map"]
-    players = obs["players"]
-    bomb_set = _bomb_set(obs["bombs"])
-    zone_type = _is_corridor_or_dead_end(pos, game_map, bomb_set)
-    if zone_type != "open":
-        return 0
-
-    center = (BOARD_SIZE // 2, BOARD_SIZE // 2)
-    my_center_dist = abs(pos[0] - center[0]) + abs(pos[1] - center[1])
-    pressure = 0
-
-    for i, p in enumerate(players):
-        if i == agent_id or int(p[2]) != 1:
-            continue
-
-        enemy_pos = (int(p[0]), int(p[1]))
-        enemy_dist = abs(pos[0] - enemy_pos[0]) + abs(pos[1] - enemy_pos[1])
-        enemy_mobility = _free_neighbors(enemy_pos, game_map, bomb_set)
-        enemy_center_dist = abs(enemy_pos[0] - center[0]) + abs(enemy_pos[1] - center[1])
-
-        if enemy_dist <= 4:
-            pressure += 40
-        if enemy_mobility <= 2:
-            pressure += 40
-        if my_center_dist < enemy_center_dist:
-            pressure += 25
-
-    return min(pressure, 120)
 
 
 # ==============================================================================
@@ -737,8 +626,7 @@ def _is_meaningful_bomb(obs, bomb_pos, agent_id, escape_pressure=None):
 
 def _score_move(action, my_pos, my_state, game_map, players, bomb_set,
                 danger_time, item_targets, box_spots, enemies, obs, agent_id,
-                future_cache=None, expansion_cache=None, is_loop=False,
-                position_history=None):
+                future_cache=None):
     """Score a movement action (0-4)."""
     my_r, my_c = my_pos
     _, _, _, bombs_left, _ = my_state
@@ -790,34 +678,6 @@ def _score_move(action, my_pos, my_state, game_map, players, bomb_set,
     else:
         score += OPEN_ZONE_BONUS
 
-    # ----- Controlled expansion / long-term territory value -----
-    expansion_score = _controlled_expansion_score(
-        npos, game_map, bomb_set, danger_time, EXPANSION_BFS_DEPTH,
-        expansion_cache
-    )
-    if is_loop:
-        score += expansion_score * LOOP_EXPANSION_SCORE_MULTIPLIER
-    else:
-        score += expansion_score * EXPANSION_SCORE_MULTIPLIER
-
-    territory_pressure = _enemy_territory_pressure(
-        npos, obs, danger_time, agent_id
-    )
-    score += territory_pressure * TERRITORY_PRESSURE_MULTIPLIER
-
-    # ----- Loop breaker -----
-    if position_history:
-        repeat_count = position_history.count(npos)
-        if is_loop:
-            if action == A_STOP:
-                score -= 180
-            if repeat_count > 0:
-                score -= repeat_count * 50
-            else:
-                score += 100
-            if zone_type == "open":
-                score += 60
-
     # ----- Item pickup -----
     if game_map[nr, nc] in (TILE_RADIUS, TILE_CAPACITY):
         score += 250
@@ -865,8 +725,7 @@ def _score_move(action, my_pos, my_state, game_map, players, bomb_set,
 
 
 def _score_bomb(my_pos, my_state, game_map, players, bomb_set,
-                danger_time, obs, agent_id, escape_pressure=None,
-                is_loop=False):
+                danger_time, obs, agent_id, escape_pressure=None):
     """Score the PLACE_BOMB action.  Returns -1e9 if invalid or unsafe."""
     my_r, my_c = my_pos
     _, _, _, bombs_left, bonus = my_state
@@ -898,8 +757,6 @@ def _score_bomb(my_pos, my_state, game_map, players, bomb_set,
     # ----- Box destruction -----
     if boxes > 0:
         score += 350 + 80 * boxes
-        if is_loop:
-            score += 100
 
     # ----- Direct enemy hit -----
     if threatens:
@@ -946,41 +803,9 @@ class Agent:
 
     def __init__(self, agent_id: int):
         self.agent_id = int(agent_id)
-        self.position_history = []
-        self.max_position_history = MAX_POSITION_HISTORY
-
-    def _maybe_reset_position_history(self, my_pos, bombs):
-        spawn_positions = {
-            0: (1, 1),
-            1: (BOARD_SIZE - 2, BOARD_SIZE - 2),
-            2: (1, BOARD_SIZE - 2),
-            3: (BOARD_SIZE - 2, 1),
-        }
-        if (
-            my_pos == spawn_positions.get(self.agent_id)
-            and len(_bomb_set(bombs)) == 0
-            and len(self.position_history) > 10
-        ):
-            self.position_history = []
-
-    def _update_position_history(self, my_pos):
-        self.position_history.append(my_pos)
-        if len(self.position_history) > self.max_position_history:
-            self.position_history = self.position_history[-self.max_position_history:]
-
-    def _is_local_loop(self):
-        if not self.position_history:
-            return False
-        recent = self.position_history[-8:]
-        return (
-            len(recent) >= 6
-            and (len(set(recent)) <= 3
-                 or self.position_history.count(self.position_history[-1]) >= 4)
-        )
 
     def act(self, obs: dict) -> int:
         self._future_cache = {}
-        self._expansion_cache = {}
         game_map = obs["map"]
         players = obs["players"]
         bombs = obs["bombs"]
@@ -991,10 +816,6 @@ class Agent:
             return A_STOP
 
         my_pos = (my_r, my_c)
-        self._maybe_reset_position_history(my_pos, bombs)
-        self._update_position_history(my_pos)
-        is_loop = self._is_local_loop()
-
         my_state = (my_r, my_c, alive, bombs_left, bonus)
         bomb_set = _bomb_set(bombs)
         enemies = _alive_enemies(obs, self.agent_id)
@@ -1024,45 +845,23 @@ class Agent:
         # ---- 5. Score all actions ----
         best_action = A_STOP
         best_score = -1e9
-        raw_scores = {}
-        action_positions = {}
 
         for action in ALL_ACTIONS:
             if action == A_BOMB:
                 score = _score_bomb(my_pos, my_state, game_map, players,
                                     bomb_set, danger_time, obs,
-                                    self.agent_id, bomb_escape_pressure,
-                                    is_loop)
+                                    self.agent_id, bomb_escape_pressure)
                 pos = my_pos
             else:
                 score, pos = _score_move(action, my_pos, my_state, game_map,
                                          players, bomb_set, danger_time,
                                          item_targets, box_spots, enemies, obs,
-                                         self.agent_id, self._future_cache,
-                                         self._expansion_cache, is_loop,
-                                         self.position_history)
+                                         self.agent_id, self._future_cache)
 
-            raw_scores[action] = score
-            action_positions[action] = pos
-
-        valid_scores = [score for score in raw_scores.values() if score > -1e8]
-        if valid_scores:
-            mean_score = sum(valid_scores) / len(valid_scores)
-            final_scores = {
-                action: (
-                    score + ACTION_ADVANTAGE_WEIGHT * (score - mean_score)
-                    if score > -1e8 else score
-                )
-                for action, score in raw_scores.items()
-            }
-        else:
-            final_scores = raw_scores
-
-        for action, score in final_scores.items():
             if score > best_score:
                 best_score = score
                 best_action = action
-                best_pos = action_positions.get(action)
+                best_pos = pos
 
         # ---- 6. Bomb hysteresis ----
         if best_action == A_BOMB:
@@ -1071,9 +870,7 @@ class Agent:
                 score, _ = _score_move(action, my_pos, my_state, game_map,
                                        players, bomb_set, danger_time,
                                        item_targets, box_spots, enemies, obs,
-                                       self.agent_id, self._future_cache,
-                                       self._expansion_cache, is_loop,
-                                       self.position_history)
+                                       self.agent_id, self._future_cache)
                 if score > best_move_score:
                     best_move_score = score
             pressure = 0 if bomb_escape_pressure is None else bomb_escape_pressure
@@ -1091,9 +888,7 @@ class Agent:
                                              players, bomb_set, danger_time,
                                              item_targets, box_spots, enemies,
                                              obs, self.agent_id,
-                                             self._future_cache,
-                                             self._expansion_cache, is_loop,
-                                             self.position_history)
+                                             self._future_cache)
                     if score > best_score:
                         best_score = score
                         best_action = action

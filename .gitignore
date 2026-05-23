@@ -14,3 +14,5 @@ backups/
 tests/
 training/
 submission.zip
+.claude/
+CLAUDE.md
