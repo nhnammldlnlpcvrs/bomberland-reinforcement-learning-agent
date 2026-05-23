@@ -45,3 +45,16 @@ Online opponents are not the same as local baselines. Robustness means stable av
 
 Bomberland has hard-death actions. A learned policy must not be allowed to choose immediate death, unsafe bomb placement, or invalid movement.
 
+## Dataset Collection Pipeline
+
+The first ML pipeline is replay logs to imitation dataset. The teacher is the current online-robust heuristic agent, because it already encodes safety, expansion, bomb escape checks, and online robustness lessons.
+
+Dataset flow:
+
+1. Generate replay logs with `run_local_match --save_logs true`.
+2. Parse `logs/json/*.json`.
+3. Extract `obs -> action` pairs for `HybridAgent`.
+4. Encode each frame into a compact 13x13 multi-channel tensor.
+5. Save compressed `.npz` files for future supervised imitation learning.
+
+PPO is still not the next step. Before PPO, collect cleaner datasets, train a small CNN policy to imitate the heuristic, and evaluate it behind the deterministic safety filter. The future CNN policy should rank safe actions; it should not own safety decisions.
