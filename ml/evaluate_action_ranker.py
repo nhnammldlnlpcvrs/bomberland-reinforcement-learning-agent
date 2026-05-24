@@ -107,7 +107,65 @@ def evaluate_action_ranker(args):
         print(f"  {ACTION_NAMES[idx]}: {100.0 * pred_counts[idx] / direction_total:.1f}% of moves")
     print(f"max_movement_direction: {metrics['max_direction_pct']:.1f}%")
 
+    # --- Bomb-specific diagnostics ---
+    print("\nBomb diagnostics:")
+
+    bomb_candidate_rate = float(safe_counts[5] / max(1, total))
+    bomb_target_rate = float(target_counts[5] / max(1, total))
+    print(f"bomb_candidate_rate: {bomb_candidate_rate * 100.0:.1f}%")
+    print(f"bomb_target_rate: {bomb_target_rate * 100.0:.1f}%")
+
+    bomb_candidate_mask = mask_np[:, 5]
+    bomb_candidate_indices = np.where(bomb_candidate_mask)[0]
+    target_not_bomb_mask = target_np != 5
+
+    if len(bomb_candidate_indices) > 0:
+        bomb_top1_when_candidate = float(
+            (preds[bomb_candidate_indices] == 5).sum() / len(bomb_candidate_indices)
+        )
+        print(f"bomb_top1_when_candidate: {bomb_top1_when_candidate * 100.0:.1f}%")
+    else:
+        bomb_top1_when_candidate = 0.0
+        print("bomb_top1_when_candidate: N/A (no bomb candidates)")
+
+    bomb_candidate_not_target = bomb_candidate_mask & target_not_bomb_mask
+    n_bomb_candidate_not_target = int(bomb_candidate_not_target.sum())
+    if n_bomb_candidate_not_target > 0:
+        bomb_top1_when_not_target = float(
+            (preds[bomb_candidate_not_target] == 5).sum() / n_bomb_candidate_not_target
+        )
+        print(f"bomb_top1_when_target_not_bomb: {bomb_top1_when_not_target * 100.0:.1f}%")
+    else:
+        bomb_top1_when_not_target = 0.0
+        print("bomb_top1_when_target_not_bomb: N/A")
+
+    # Raw BOMB top1 (unmasked)
+    raw_preds = logits.argmax(dim=1).numpy()
+    raw_bomb_top1 = float((raw_preds == 5).sum() / total)
+    print(f"raw_bomb_top1 (unmasked): {raw_bomb_top1 * 100.0:.1f}%")
+
+    # Mean BOMB logit gap vs max non-BOMB
+    logits_np = logits.numpy()
+    bomb_logits = logits_np[:, 5]
+    non_bomb_logits = np.where(mask_np[:, :5], logits_np[:, :5], -1e9)
+    max_non_bomb = non_bomb_logits.max(axis=1)
+    bomb_gaps = bomb_logits - max_non_bomb
+    mean_gap = float(bomb_gaps.mean())
+    print(f"mean_bomb_logit_gap_vs_max_non_bomb: {mean_gap:+.4f}")
+
+    # BOMB logit gap when target is bomb vs not
+    bomb_target_mask = target_np == 5
+    if bomb_target_mask.any():
+        gap_when_target_bomb = float(bomb_gaps[bomb_target_mask].mean())
+        print(f"bomb_logit_gap_when_target_is_bomb: {gap_when_target_bomb:+.4f}")
+    if target_not_bomb_mask.any():
+        gap_when_not_bomb = float(bomb_gaps[target_not_bomb_mask].mean())
+        print(f"bomb_logit_gap_when_target_not_bomb: {gap_when_not_bomb:+.4f}")
+
+    # --- Warnings ---
     warnings = []
+    if raw_bomb_top1 > 0.90:
+        warnings.append(f"RAW_BOMB_COLLAPSE: raw BOMB top1={raw_bomb_top1*100:.1f}% — unconstrained logit likely")
     stop_pct = 100.0 * pred_counts[0] / max(1, total)
     bomb_pct = 100.0 * pred_counts[5] / max(1, total)
     if stop_pct > 35.0:

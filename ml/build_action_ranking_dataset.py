@@ -80,7 +80,7 @@ def compute_safe_action_mask(obs, chosen_action, include_unchosen_bombs=False):
         # The heuristic already chose bomb in replay, so keep it as a positive
         # candidate even though this builder cannot recompute can_escape_after_bomb.
         mask[5] = current_safe
-    elif include_unchosen_bombs and current_safe and _adjacent_signal(obs, row, col):
+    elif include_unchosen_bombs and current_safe:
         mask[5] = True
 
     if 0 <= int(chosen_action) < 6 and not mask[int(chosen_action)]:

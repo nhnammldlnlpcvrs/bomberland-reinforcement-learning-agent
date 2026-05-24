@@ -108,6 +108,26 @@ def ranking_loss(logits, targets, masks, loss_mode="masked_ce", label_smoothing=
     raise ValueError(f"unknown loss_mode: {loss_mode}")
 
 
+def bomb_suppression_loss(logits, targets, masks, margin=1.0):
+    """Penalize high BOMB logit when BOMB is a candidate but the target is not BOMB.
+
+    For samples where BOMB is in the mask and the target action is not BOMB,
+    apply softplus(bomb_logit - max_non_bomb_logit + margin). This forces the
+    model to rank at least one non-BOMB action above BOMB by the margin.
+    """
+    bomb_candidate = masks[:, 5]
+    target_not_bomb = targets != 5
+    apply_mask = bomb_candidate & target_not_bomb
+    if not apply_mask.any():
+        return torch.tensor(0.0, device=logits.device)
+
+    masked_logits = logits.masked_fill(~masks, -1e9)
+    bomb_logit = logits[apply_mask, 5]
+    non_bomb_logits = masked_logits[apply_mask][:, :5]
+    max_non_bomb = non_bomb_logits.max(dim=1).values
+    return torch.nn.functional.softplus(bomb_logit - max_non_bomb + float(margin)).mean()
+
+
 def behavior_regularization_loss(logits, targets, masks, target_bomb_pred_min=0.03,
                                  target_bomb_pred_max=0.10,
                                  target_stop_pred_max=0.30,
@@ -290,6 +310,13 @@ def train_action_ranker(args):
                     target_stop_pred_max=args.target_stop_pred_max,
                     stop_margin=args.stop_margin,
                 )
+            if args.bomb_suppression_weight > 0:
+                loss = loss + float(args.bomb_suppression_weight) * bomb_suppression_loss(
+                    logits,
+                    batch_targets,
+                    batch_masks,
+                    margin=args.bomb_suppression_margin,
+                )
             loss.backward()
             optimizer.step()
             train_loss += float(loss.item()) * int(batch_targets.shape[0])
@@ -334,6 +361,8 @@ def train_action_ranker(args):
                         "target_stop_pred_max": args.target_stop_pred_max,
                         "behavior_reg_weight": args.behavior_reg_weight,
                         "stop_margin": args.stop_margin,
+                        "bomb_suppression_weight": args.bomb_suppression_weight,
+                        "bomb_suppression_margin": args.bomb_suppression_margin,
                         "augment_symmetry": args.augment_symmetry,
                     },
                 },
@@ -363,6 +392,8 @@ def main():
     parser.add_argument("--target_stop_pred_max", type=float, default=0.30)
     parser.add_argument("--behavior_reg_weight", type=float, default=1.0)
     parser.add_argument("--stop_margin", type=float, default=0.05)
+    parser.add_argument("--bomb_suppression_weight", type=float, default=0.0)
+    parser.add_argument("--bomb_suppression_margin", type=float, default=1.0)
     args = parser.parse_args()
     train_action_ranker(args)
 
