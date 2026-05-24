@@ -840,6 +840,9 @@ def _score_bomb_spot(r, c, obs, agent_id, game_map, bomb_set, danger_time,
     future_score = _future_survivability_score(
         bomb_pos, obs, simulated_danger, MAX_FUTURE_SURVIVABILITY
     )
+    # Hard reject only the most dangerous spots
+    if future_score < -350:
+        return -1e9
     if future_score < -200:
         score -= 300
     elif future_score < -50:
@@ -1045,15 +1048,35 @@ def _score_move(action, my_pos, my_state, game_map, players, bomb_set,
                 decay = 6
             score += max(0, base - decay * enemy_dist)
 
-    # ----- Bomb spot approach (Phase C) -----
+    # ----- Bomb spot approach (Phase C, safety-gated) -----
     if bomb_spot_info is not None and action != A_STOP:
         spot_pos, spot_first_action, spot_score = bomb_spot_info
-        if spot_pos is not None and spot_score > 200:
-            if spot_first_action == action:
-                score += 180
-            dist_to_spot = abs(nr - spot_pos[0]) + abs(nc - spot_pos[1])
-            if dist_to_spot <= 2:
-                score += max(0, 60 - 20 * dist_to_spot)
+        if spot_pos is not None and spot_score > 200 and dt > 3:
+            # Scale aggression by enemy count: full bonus at 1 enemy, reduced at 2-3
+            num_enemies = len(enemies)
+            if num_enemies <= 1:
+                enemy_scale = 1.0
+            elif num_enemies == 2:
+                enemy_scale = 0.85
+            else:
+                enemy_scale = 0.65
+
+            # Reduce bonus in corridors/dead-ends where bombing is self-trapping
+            spot_zone = _is_corridor_or_dead_end(spot_pos, game_map, bomb_set)
+            if spot_zone == "dead_end":
+                zone_scale = 0.4
+            elif spot_zone == "corridor":
+                zone_scale = 0.75
+            else:
+                zone_scale = 1.0
+
+            safety_scale = enemy_scale * zone_scale
+            if safety_scale > 0.0:
+                if spot_first_action == action:
+                    score += 180 * safety_scale
+                dist_to_spot = abs(nr - spot_pos[0]) + abs(nc - spot_pos[1])
+                if dist_to_spot <= 2:
+                    score += max(0, 60 - 20 * dist_to_spot) * safety_scale
 
     # ----- STOP-specific -----
     if action == A_STOP:
