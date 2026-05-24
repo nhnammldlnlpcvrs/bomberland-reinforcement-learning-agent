@@ -16,3 +16,4 @@ training/
 submission.zip
 .claude/
 CLAUDE.md
+checkpoints/
