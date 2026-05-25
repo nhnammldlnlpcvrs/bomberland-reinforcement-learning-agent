@@ -1,0 +1,42 @@
+{
+  "agent_name": "hybrid_agent_rl_pure",
+  "board_size": 13,
+  "num_actions": 6,
+  "spatial_channels": 18,
+  "scalar_dim": 8,
+  "hidden_dim": 128,
+  "gamma": 0.99,
+  "learning_rate": 0.00025,
+  "batch_size": 64,
+  "replay_capacity": 75000,
+  "target_update_steps": 1000,
+  "train_every_steps": 4,
+  "warmup_steps": 1000,
+  "epsilon_start": 1.0,
+  "epsilon_final": 0.05,
+  "epsilon_decay_steps": 80000,
+  "gradient_clip_norm": 10.0,
+  "max_steps": 500,
+  "checkpoint_every_episodes": 50,
+  "reward": {
+    "win": 20.0,
+    "draw_survive": 4.0,
+    "death": -12.0,
+    "rank_scale": 4.0,
+    "kill_enemy": 6.0,
+    "box_destroyed": 0.7,
+    "item_collected": 1.2,
+    "survival": 0.01,
+    "danger": -0.08,
+    "invalid_action": -0.25,
+    "unsafe_bomb": -0.5,
+    "loop": -0.03,
+    "bomb_with_target": 0.05
+  },
+  "curriculum": {
+    "stage_a": ["RandomAgent", "SimpleRuleAgent"],
+    "stage_b": ["SimpleRuleAgent", "BoxFarmerAgent", "SmarterRuleAgent", "TacticalRuleAgent", "GeniusRuleAgent"],
+    "stage_c_self_play_ratio": 0.35,
+    "stage_d_eval": ["RandomAgent", "SimpleRuleAgent", "BoxFarmerAgent", "SmarterRuleAgent", "TacticalRuleAgent", "GeniusRuleAgent", "agent/hybrid_agent_online_robust"]
+  }
+}

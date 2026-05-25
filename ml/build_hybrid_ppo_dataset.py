@@ -37,10 +37,10 @@ ACTION_NAMES = ["STOP", "LEFT", "RIGHT", "UP", "DOWN", "BOMB"]
 
 CATEGORY_WEIGHTS = {
     "bomb_chosen": 1.0,
-    "bomb_safe_unchosen": 0.4,
+    "bomb_safe_unchosen": 0.75,
     "danger": 1.0,
     "tactical": 0.8,
-    "routine": 0.15,
+    "routine": 0.25,
 }
 
 
