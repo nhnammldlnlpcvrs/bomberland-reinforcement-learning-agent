@@ -18,5 +18,10 @@ submission.zip
 .claude/
 CLAUDE.md
 checkpoints/
+ml/checkpoints/**/*.pth
+ml/checkpoints/**/*.pt
+ml/results/
+*.pth
+*.pt
 docs/superpowers/
 docs/AI Challenge GDGoC HCMUS - Hướng dẫn.pdf

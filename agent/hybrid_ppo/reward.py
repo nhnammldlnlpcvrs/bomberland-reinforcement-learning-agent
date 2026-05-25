@@ -13,6 +13,8 @@ Design principles:
 
 import numpy as np
 
+from agent.hybrid_ppo.safety_filter import compute_safe_action_mask
+
 
 def compute_reward(obs, prev_obs, agent_id, action, done, step,
                    position_history=None, max_steps=500):
@@ -80,9 +82,20 @@ def compute_reward(obs, prev_obs, agent_id, action, done, step,
     if action == 0:  # STOP
         reward -= 0.05  # slight bias toward movement
     elif action == 5:  # BOMB
-        # Small bonus for using bomb (only if it was meaningful — will be
-        # offset by negative if bomb was useless, detected via outcome)
-        reward += 0.1
+        # Immediate expected-value reward — bridges the credit-assignment gap
+        # between bomb placement (now) and detonation (7 steps later).
+        radius = 1 + int(p[4])
+        boxes_hit = _count_boxes_in_blast_range(my_r, my_c, radius, obs["map"])
+        enemies_threatened = _count_enemies_in_blast(
+            my_r, my_c, radius, obs["map"], obs["players"], agent_id
+        )
+        reward += 0.5 + 0.5 * boxes_hit + 1.5 * enemies_threatened
+
+    # ---- Bomb-hoarding penalty (encourages using bombs when safe) ----
+    if int(p[3]) > 0:
+        safe_mask_bomb = compute_safe_action_mask(obs, agent_id)
+        if safe_mask_bomb[5] and action != 5:
+            reward -= 0.02  # slight penalty for hoarding when bombing is safe
 
     # ---- Escape margin (safe cells near agent) ----
     safe_count = _count_safe_neighbors(obs, my_r, my_c)
@@ -191,3 +204,38 @@ def _min_enemy_distance(obs, agent_id, my_r, my_c):
         if best is None or dist < best:
             best = dist
     return best
+
+
+def _count_boxes_in_blast_range(r, c, radius, game_map):
+    """Count boxes that would be hit by a bomb at (r, c) with given radius."""
+    count = 0
+    for dr, dc in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
+        for step in range(1, radius + 1):
+            nr, nc = r + dr * step, c + dc * step
+            if nr < 0 or nr >= 13 or nc < 0 or nc >= 13:
+                break
+            if game_map[nr, nc] == 1:  # wall
+                break
+            if game_map[nr, nc] == 2:  # box
+                count += 1
+                break  # blast stops at first box
+    return count
+
+
+def _count_enemies_in_blast(r, c, radius, game_map, players, agent_id):
+    """Count enemies threatened by a bomb at (r, c) — enemies in blast line."""
+    count = 0
+    for dr, dc in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
+        for step in range(1, radius + 1):
+            nr, nc = r + dr * step, c + dc * step
+            if nr < 0 or nr >= 13 or nc < 0 or nc >= 13:
+                break
+            if game_map[nr, nc] == 1:  # wall
+                break
+            for i, p in enumerate(players):
+                if i != agent_id and int(p[2]) == 1:
+                    if int(p[0]) == nr and int(p[1]) == nc:
+                        count += 1
+            if game_map[nr, nc] == 2:  # box blocks blast
+                break
+    return count
