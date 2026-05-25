@@ -1,5 +1,6 @@
 __pycache__/
 *.py[cod]
+*.npz
 logs/
 .venv
 ckpts/
@@ -17,3 +18,5 @@ submission.zip
 .claude/
 CLAUDE.md
 checkpoints/
+docs/superpowers/
+docs/AI Challenge GDGoC HCMUS - Hướng dẫn.pdf
