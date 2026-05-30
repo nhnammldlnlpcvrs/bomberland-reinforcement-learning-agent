@@ -1,0 +1,22 @@
+{
+  "samples": 2000,
+  "train_samples": 1600,
+  "val_samples": 400,
+  "source_distribution": {
+    "0": 1839,
+    "1": 161
+  },
+  "scenario_distribution": {
+    "0": 30,
+    "3": 131,
+    "10": 1839
+  },
+  "death_within_7_rate": 0.17299999296665192,
+  "escaped_blast_rate": 0.21950000524520874,
+  "has_escape_path_now_rate": 0.9919999837875366,
+  "has_escape_after_bomb_rate": 0.6545000076293945,
+  "trapped_if_bomb_rate": 0.34549999237060547,
+  "in_future_blast_rate": 0.2669999897480011,
+  "safe_tiles_after_bomb_mean": 52.10100173950195,
+  "boxes_destroyed_future_mean": 0.7214999794960022
+}

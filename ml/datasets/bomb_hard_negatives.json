@@ -1,0 +1,21 @@
+{
+  "policy": "ml/checkpoints/rl_agent_pure/ppo_bomb_selector_best.zip",
+  "opponents": [
+    "random",
+    "simple"
+  ],
+  "episodes": 100,
+  "output": "ml\\datasets\\bomb_hard_negatives.npz",
+  "samples": 19,
+  "observed_unsafe_count": 0,
+  "reason_counts": {
+    "observed_death_after_bomb": 0,
+    "no_escape_after_bomb": 1,
+    "dangerous_current_or_future": 18,
+    "no_bomb_value": 0,
+    "trapped_after_bomb": 0
+  },
+  "nearby_box_mean": 0.3157894736842105,
+  "value_proxy_count": 19,
+  "predicted_bomb_prob_mean": 0.0
+}

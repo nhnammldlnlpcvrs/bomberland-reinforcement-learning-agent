@@ -1,0 +1,21 @@
+{
+  "input": "ml/datasets/rl_bc_bomb_escape.npz",
+  "base_dataset": "ml/datasets/bomb_value_dataset.npz",
+  "hard_negatives": "ml/datasets/bomb_hard_negatives.npz",
+  "output": "ml\\datasets\\bomb_value_dataset_v2.npz",
+  "samples": 2466,
+  "positive_count": 506,
+  "easy_negative_count": 1941,
+  "hard_negative_count": 19,
+  "positive_fraction": 0.20519059896469116,
+  "source_distribution": {
+    "1": 506,
+    "2": 941,
+    "3": 1000,
+    "4": 19
+  },
+  "hard_reason_distribution": {
+    "2": 1,
+    "3": 18
+  }
+}

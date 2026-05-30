@@ -1,0 +1,22 @@
+{
+  "samples": 37297,
+  "train_samples": 29837,
+  "val_samples": 7460,
+  "source_distribution": {
+    "0": 25752,
+    "1": 11545
+  },
+  "mode_distribution": {
+    "0": 3797,
+    "1": 13110,
+    "2": 13662,
+    "3": 6728
+  },
+  "death_within_7_rate": 0.11622918397188187,
+  "escaped_blast_rate": 0.15802879631519318,
+  "own_bomb_recent_rate": 0.2801297605037689,
+  "has_escape_after_bomb_rate": 0.176099956035614,
+  "trapped_if_bomb_rate": 0.13344237208366394,
+  "in_future_blast_rate": 0.10365445166826248,
+  "would_destroy_boxes_mean": 0.1758318394422531
+}

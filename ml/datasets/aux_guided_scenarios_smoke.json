@@ -1,0 +1,19 @@
+{
+  "scanned_states": 80,
+  "saved_states": 80,
+  "thresholds": {
+    "death": 0.7,
+    "escape_available": 0.3,
+    "bomb_escape_available": 0.3,
+    "trapped_if_bomb": 0.5,
+    "future_blast": 0.7
+  },
+  "scenario_counts": {
+    "safe_useful_bomb_avoided": 16,
+    "normal_safe_state": 64
+  },
+  "would_destroy_boxes_mean": 0.20000000298023224,
+  "bomb_escape_available_rate": 1.0,
+  "trapped_if_bomb_rate": 0.0,
+  "death_prob_mean": 0.01351534016430378
+}

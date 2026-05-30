@@ -1,0 +1,16 @@
+{
+  "samples": 126655,
+  "action_distribution": {
+    "0": 31768,
+    "1": 24008,
+    "2": 24012,
+    "3": 22705,
+    "4": 22498,
+    "5": 1664
+  },
+  "bomb_samples": 1664,
+  "bomb_fraction": 0.01313805218901741,
+  "post_bomb_escape_samples": 10770,
+  "skipped_illegal": 0,
+  "output": "ml\\datasets\\rl_bc_stage1.npz"
+}

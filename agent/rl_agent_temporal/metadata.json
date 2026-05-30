@@ -1,0 +1,6 @@
+{
+  "frame_stack": 4,
+  "base_channels": 19,
+  "observation_shape": [76, 13, 13],
+  "note": "Research-only temporal PPO agent. Do not promote without benchmark gates."
+}

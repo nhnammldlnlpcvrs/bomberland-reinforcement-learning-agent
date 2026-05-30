@@ -1,0 +1,27 @@
+{
+  "input": "ml/datasets/rl_bc_bomb_escape.npz",
+  "output": "ml\\datasets\\rl_bc_useful_safe_bomb_contexts.npz",
+  "input_samples": 116881,
+  "samples_kept": 1275,
+  "kept_fraction": 0.010908530898948504,
+  "boxes_destroyed_mean": 0.7584313725490196,
+  "boxes_destroyed_distribution": {
+    "0": 765,
+    "1": 230,
+    "2": 152,
+    "3": 92,
+    "4": 27,
+    "5": 6,
+    "6": 2,
+    "7": 1
+  },
+  "step_mean": 200.9764705882353,
+  "step_min": 6,
+  "step_max": 491,
+  "current_danger_mean": 8729.236862745098,
+  "current_danger_min": 4,
+  "current_danger_max": 9999,
+  "future_danger_mean": 5593.01568627451,
+  "future_danger_min": 1,
+  "future_danger_max": 9999
+}

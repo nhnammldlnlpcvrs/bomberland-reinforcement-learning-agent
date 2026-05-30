@@ -1,0 +1,20 @@
+{
+  "input": "ml/datasets/rl_bc_selected_bomb_sequences_v3.npz",
+  "output": "ml/datasets/fs4_selected_bomb_bc.npz",
+  "frame_stack": 4,
+  "samples": 784,
+  "bomb_samples": 170,
+  "escape_samples": 614,
+  "action_distribution": {
+    "0": 0,
+    "1": 202,
+    "2": 143,
+    "3": 130,
+    "4": 139,
+    "5": 170
+  },
+  "boxes_mean": 1.5943877696990967,
+  "bomb_weight": 0.02,
+  "escape_weight": 8.0,
+  "source": "rl_bc_selected_bomb_sequences_v3.npz"
+}

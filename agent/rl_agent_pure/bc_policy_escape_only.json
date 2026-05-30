@@ -1,0 +1,96 @@
+{
+  "dataset": "ml/datasets/rl_bc_bomb_escape.npz",
+  "mode": "post_bomb_escape",
+  "samples": 9402,
+  "action_distribution": {
+    "0": 3079,
+    "1": 1889,
+    "2": 1533,
+    "3": 1446,
+    "4": 1331,
+    "5": 124
+  },
+  "bomb_samples": 124,
+  "post_bomb_escape_samples": 9402,
+  "bomb_class_weight": 0.0,
+  "escape_bomb_weight": 0.0,
+  "escape_move_weight": 4.0,
+  "output": "agent/rl_agent_pure/bc_policy_escape_only.zip",
+  "final": {
+    "epoch": 5,
+    "train_loss": 128.6303457372329,
+    "train_accuracy": 0.2376787613757239,
+    "val_loss": 1.7236994504928589,
+    "accuracy": 0.16259298618490967,
+    "per_action_accuracy": {
+      "0": 0.0,
+      "1": 0.08465608465608465,
+      "2": 0.0,
+      "3": 0.33974358974358976,
+      "4": 0.6829268292682927,
+      "5": 0.0
+    },
+    "place_bomb_prediction_frequency": 0.0,
+    "place_bomb_precision": 0.0,
+    "place_bomb_recall": 0.0,
+    "predicted_action_distribution": {
+      "0": 0,
+      "1": 53,
+      "2": 0,
+      "3": 389,
+      "4": 499,
+      "5": 0
+    },
+    "confusion_matrix": [
+      [
+        0,
+        12,
+        0,
+        143,
+        141,
+        0
+      ],
+      [
+        0,
+        16,
+        0,
+        82,
+        91,
+        0
+      ],
+      [
+        0,
+        3,
+        0,
+        67,
+        97,
+        0
+      ],
+      [
+        0,
+        18,
+        0,
+        53,
+        85,
+        0
+      ],
+      [
+        0,
+        4,
+        0,
+        35,
+        84,
+        0
+      ],
+      [
+        0,
+        0,
+        0,
+        9,
+        1,
+        0
+      ]
+    ],
+    "post_bomb_escape_accuracy": 0.16259298618490967
+  }
+}
