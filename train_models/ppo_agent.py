@@ -24,11 +24,11 @@ from train_models.config import (
     MAX_GRAD_NORM,
     PPO_CLIP,
     SCALAR_FEATURES,
-    STATE_CHANNELS,
+    STATE_CHANNELS_V2,
     UPDATE_EPOCHS,
     VALUE_COEF,
 )
-from train_models.state_processor import encode_observation, get_action_mask
+from train_models.state_processor import encode_observation_v2, get_action_mask
 
 
 class RolloutBuffer:
@@ -38,7 +38,7 @@ class RolloutBuffer:
         self.capacity = capacity
         self.num_envs = num_envs
 
-        self.obs = np.zeros((capacity, num_envs, STATE_CHANNELS, 13, 13), dtype=np.float32)
+        self.obs = np.zeros((capacity, num_envs, STATE_CHANNELS_V2, 13, 13), dtype=np.float32)
         self.scalars = np.zeros((capacity, num_envs, SCALAR_FEATURES), dtype=np.float32)
         self.actions = np.zeros((capacity, num_envs), dtype=np.int64)
         self.rewards = np.zeros((capacity, num_envs), dtype=np.float32)
@@ -119,7 +119,7 @@ class RolloutBuffer:
         N = self.num_envs
         total = T * N
         return {
-            "obs": self.obs[:T].reshape(total, STATE_CHANNELS, 13, 13),
+            "obs": self.obs[:T].reshape(total, STATE_CHANNELS_V2, 13, 13),
             "scalars": self.scalars[:T].reshape(total, SCALAR_FEATURES),
             "actions": self.actions[:T].reshape(total),
             "log_probs": self.log_probs[:T].reshape(total),
@@ -172,14 +172,14 @@ class PPOAgent:
             log_prob: float
             value:   float
             mask:    (6,) bool array
-            obs_tensor: (1, 7, 13, 13) for storing in buffer
+            obs_tensor: (1, 16, 13, 13) for storing in buffer
             scalars_tensor: (1, 4)
         """
-        state_tensor, scalar_tensor = encode_observation(obs, agent_id)
+        state_tensor, scalar_tensor = encode_observation_v2(obs, agent_id)
         mask_np = get_action_mask(obs, agent_id)
         mask = torch.from_numpy(mask_np).unsqueeze(0).to(self.device)  # (1, 6)
 
-        obs_batch = state_tensor.unsqueeze(0).to(self.device)   # (1, 7, 13, 13)
+        obs_batch = state_tensor.unsqueeze(0).to(self.device)   # (1, 16, 13, 13)
         scalars_batch = scalar_tensor.unsqueeze(0).to(self.device)  # (1, 4)
 
         action, log_prob, value = self.model.get_action(

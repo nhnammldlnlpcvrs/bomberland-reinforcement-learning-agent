@@ -17,7 +17,7 @@ import torch
 # ── Import from train_models package ─────────────────────────────────────────
 # These modules are pure Python + numpy + torch; no banned imports.
 from train_models.model import ActorCritic
-from train_models.state_processor import encode_observation, get_action_mask
+from train_models.state_processor import encode_observation_v2, get_action_mask
 from train_models.config import DEVICE, BEST_MODEL_PATH
 
 
@@ -27,7 +27,7 @@ class Agent:
 
     Competition-compliant:
       - Imports: numpy, torch, standard library only
-      - act() returns in < 100ms (single CPU forward pass)
+      - act() returns in < 100ms (single CPU forward pass, 16-channel v2 encoder)
       - No I/O, network, subprocess, or disk writes inside act()
     """
     team_id = "MasterAgentPPO"
@@ -91,7 +91,7 @@ class Agent:
 
     def _warmup(self):
         """Run a single dummy forward pass to warm up the model."""
-        dummy_obs = torch.zeros(1, 7, 13, 13, device=self.device)
+        dummy_obs = torch.zeros(1, 16, 13, 13, device=self.device)
         dummy_scalars = torch.zeros(1, 4, device=self.device)
         dummy_mask = torch.ones(1, 6, dtype=torch.bool, device=self.device)
         with torch.no_grad():
@@ -110,11 +110,11 @@ class Agent:
         """
         try:
             # ── Encode state ──────────────────────────────────────────────────
-            state_tensor, scalar_tensor = encode_observation(obs, self.agent_id)
+            state_tensor, scalar_tensor = encode_observation_v2(obs, self.agent_id)
             action_mask = get_action_mask(obs, self.agent_id)
 
             # ── Prepare tensors ───────────────────────────────────────────────
-            obs_batch = state_tensor.unsqueeze(0).to(self.device)   # (1, 7, 13, 13)
+            obs_batch = state_tensor.unsqueeze(0).to(self.device)   # (1, 16, 13, 13)
             scal_batch = scalar_tensor.unsqueeze(0).to(self.device)  # (1, 4)
             mask_batch = torch.from_numpy(action_mask).unsqueeze(0).to(self.device)  # (1, 6)
 

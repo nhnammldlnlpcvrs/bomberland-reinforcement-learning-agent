@@ -4,8 +4,13 @@ import torch
 import torch.nn as nn
 
 
-class StandaloneBomberCnnLstm(nn.Module):
-    """Small PyTorch-only CNN-LSTM action classifier for recurrent BC diagnostics."""
+class ModularBomberCnnLstm(nn.Module):
+    """PyTorch-only modular recurrent BC model.
+
+    The shared CNN-LSTM learns temporal state features, while task-specific heads
+    keep movement, bomb decision, and post-bomb escape objectives from fighting
+    over one shared 6-way action head.
+    """
 
     def __init__(
         self,
@@ -16,8 +21,7 @@ class StandaloneBomberCnnLstm(nn.Module):
         num_lstm_layers: int = 1,
         dropout: float = 0.0,
         layer_norm: bool = False,
-        multi_head: bool = False,
-        num_actions: int = 6,
+        include_action_head: bool = True,
     ):
         super().__init__()
         self.in_channels = int(in_channels)
@@ -26,9 +30,9 @@ class StandaloneBomberCnnLstm(nn.Module):
         self.hidden_size = int(hidden_size)
         self.num_lstm_layers = int(num_lstm_layers)
         self.dropout = float(dropout)
-        self.use_layer_norm = bool(layer_norm)
-        self.multi_head = bool(multi_head)
-        self.num_actions = int(num_actions)
+        self.layer_norm_enabled = bool(layer_norm)
+        self.include_action_head = bool(include_action_head)
+
         self.cnn = nn.Sequential(
             nn.Conv2d(self.in_channels, 32, kernel_size=3, padding=1),
             nn.ReLU(),
@@ -40,7 +44,7 @@ class StandaloneBomberCnnLstm(nn.Module):
             nn.Linear(64 * self.board_size * self.board_size, self.embedding_dim),
             nn.ReLU(),
         )
-        self.layer_norm = nn.LayerNorm(self.embedding_dim) if self.use_layer_norm else nn.Identity()
+        self.layer_norm = nn.LayerNorm(self.embedding_dim) if self.layer_norm_enabled else nn.Identity()
         lstm_dropout = self.dropout if self.num_lstm_layers > 1 else 0.0
         self.lstm = nn.LSTM(
             self.embedding_dim,
@@ -49,28 +53,28 @@ class StandaloneBomberCnnLstm(nn.Module):
             dropout=lstm_dropout,
             batch_first=True,
         )
-        self.action_head = nn.Linear(self.hidden_size, self.num_actions)
-        if self.multi_head:
-            self.movement_head = nn.Linear(self.hidden_size, self.num_actions - 1)
-            self.bomb_head = nn.Linear(self.hidden_size, 1)
-        else:
-            self.movement_head = None
-            self.bomb_head = None
+        self.movement_head = nn.Linear(self.hidden_size, 5)
+        self.bomb_head = nn.Linear(self.hidden_size, 1)
+        self.escape_head = nn.Linear(self.hidden_size, 5)
+        self.action_head = nn.Linear(self.hidden_size, 6) if self.include_action_head else None
 
-    def forward(self, obs: torch.Tensor, hidden=None, return_aux: bool = False):
-        """Return per-timestep logits for obs shaped [B, T, C, 13, 13]."""
+    def encode(self, obs: torch.Tensor, hidden=None):
         if obs.ndim != 5:
             raise ValueError(f"Expected obs [B,T,C,H,W], got {tuple(obs.shape)}")
         batch, seq_len, channels, height, width = obs.shape
         x = obs.reshape(batch * seq_len, channels, height, width).float()
         embeddings = self.cnn(x).reshape(batch, seq_len, self.embedding_dim)
         embeddings = self.layer_norm(embeddings)
-        output, hidden = self.lstm(embeddings, hidden)
-        logits = self.action_head(output)
-        if not return_aux:
-            return logits, hidden
-        aux = {}
-        if self.multi_head:
-            aux["movement_logits"] = self.movement_head(output)
-            aux["bomb_logit"] = self.bomb_head(output).squeeze(-1)
-        return logits, hidden, aux
+        features, hidden = self.lstm(embeddings, hidden)
+        return features, hidden
+
+    def forward(self, obs: torch.Tensor, hidden=None):
+        features, hidden = self.encode(obs, hidden)
+        out = {
+            "movement_logits": self.movement_head(features),
+            "bomb_logit": self.bomb_head(features).squeeze(-1),
+            "escape_logits": self.escape_head(features),
+        }
+        if self.action_head is not None:
+            out["action_logits"] = self.action_head(features)
+        return out, hidden

@@ -1,0 +1,28 @@
+{
+  "num_sequences": 1492,
+  "total_steps": 32162,
+  "action_distribution": {
+    "0": 6604,
+    "1": 6745,
+    "2": 6689,
+    "3": 5980,
+    "4": 5964,
+    "5": 180
+  },
+  "bomb_label_count": 180,
+  "sequence_type_distribution": {
+    "normal_movement": 692,
+    "safe_bomb": 180,
+    "post_bomb_escape": 500,
+    "unsafe_bomb_negative": 120
+  },
+  "boxes_destroyed_after_bomb_mean": 1.7882353067398071,
+  "output": "ml/datasets/recurrent_bc_balanced_sequences.npz",
+  "max_len": 64,
+  "sources": {
+    "normal_dataset": "ml/datasets/recurrent_bc_online_robust.npz",
+    "selected_sequences": "ml/datasets/rl_bc_selected_bomb_sequences_v3.npz",
+    "useful_sequences": "ml/datasets/rl_bc_useful_bomb_sequences.npz",
+    "unsafe_negatives": "ml/datasets/bomb_counterfactual_negatives.npz"
+  }
+}
