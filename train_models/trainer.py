@@ -26,6 +26,8 @@ from train_models.config import (
     ACTION_SPACE,
     AGENT_POOL_DIR,
     A_BOMB,
+    A_STOP,
+    AUX_CHECKPOINT_PATH,
     BOARD_SIZE,
     CHECKPOINT_DIR,
     DEVICE,
@@ -37,20 +39,37 @@ from train_models.config import (
     NUM_AGENTS,
     POOL_INITIAL_AGENTS,
     POOL_MAX_SIZE,
+    REWARD_BOMB_BOX_HIT,
+    REWARD_BOMB_ENEMY_THREAT,
+    REWARD_BOMB_HOARDING,
     REWARD_BOMB_PLACED,
     REWARD_BOX_DESTROYED,
+    REWARD_CENTER_CONTROL,
     REWARD_DANGER_ZONE,
     REWARD_DEATH,
+    REWARD_ENTER_NEW_CELL,
+    REWARD_ESCAPE_MARGIN_HIGH,
+    REWARD_ESCAPE_MARGIN_LOW,
     REWARD_ITEM_COLLECTED,
     REWARD_KILL,
+    REWARD_LATEGAME_PROXIMITY,
+    REWARD_LATEGAME_SURVIVAL,
     REWARD_LIVING,
+    REWARD_LOOP_PENALTY,
+    REWARD_OWN_BOMB_DEATH,
+    REWARD_REACHABLE_INCREASE,
+    REWARD_REVISIT_PENALTY,
+    REWARD_STOP_PENALTY,
     REWARD_WIN,
     ROLLOUT_STEPS,
     SAVE_INTERVAL,
     SELF_PLAY_UPDATE_INTERVAL,
+    STATE_CHANNELS_V2,
     TILE_BOX,
     TILE_CAPACITY,
+    TILE_GRASS,
     TILE_RADIUS,
+    TILE_WALL,
     TOTAL_TIMESTEPS,
     UPDATE_EPOCHS,
     ensure_dirs,
@@ -59,6 +78,7 @@ from train_models.model import ActorCritic
 from train_models.ppo_agent import PPOAgent, RolloutBuffer
 from train_models.state_processor import (
     encode_observation,
+    encode_observation_v2,
     get_action_mask,
 )
 
@@ -110,7 +130,7 @@ class _PPOOpponent:
 
     @torch.no_grad()
     def act(self, obs: dict) -> int:
-        state_t, scalar_t = encode_observation(obs, self.agent_id)
+        state_t, scalar_t = encode_observation_v2(obs, self.agent_id)
         mask = torch.from_numpy(get_action_mask(obs, self.agent_id)).unsqueeze(0).to(self.device)
         obs_b = state_t.unsqueeze(0).to(self.device)
         scal_b = scalar_t.unsqueeze(0).to(self.device)
@@ -201,6 +221,88 @@ def _count_items(game_map: np.ndarray) -> int:
     return int(np.sum((game_map == TILE_RADIUS) | (game_map == TILE_CAPACITY)))
 
 
+def _detect_own_bomb_death(obs_before: dict, obs_after: dict, agent_id: int) -> bool:
+    """Heuristic: did agent die from their own bomb?"""
+    prev_p = obs_before["players"][agent_id]
+    if not int(prev_p[2]):
+        return False
+    my_r, my_c = int(prev_p[0]), int(prev_p[1])
+    bombs_arr = np.asarray(obs_after["bombs"], dtype=np.int32)
+    if bombs_arr.size == 0:
+        return False
+    if bombs_arr.ndim == 1:
+        bombs_arr = bombs_arr.reshape(1, -1)
+    for i in range(bombs_arr.shape[0]):
+        owner = int(bombs_arr[i, 3])
+        if owner == agent_id:
+            br, bc = int(bombs_arr[i, 0]), int(bombs_arr[i, 1])
+            if abs(my_r - br) + abs(my_c - bc) <= 2:
+                return True
+    return False
+
+
+def _count_boxes_in_blast(r: int, c: int, radius: int, game_map: np.ndarray) -> int:
+    """Count boxes in blast lines from (r, c) with given radius."""
+    count = 0
+    for dr, dc in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
+        for step in range(1, radius + 1):
+            nr, nc = r + dr * step, c + dc * step
+            if nr < 0 or nr >= BOARD_SIZE or nc < 0 or nc >= BOARD_SIZE:
+                break
+            if game_map[nr, nc] == TILE_WALL:
+                break
+            if game_map[nr, nc] == TILE_BOX:
+                count += 1
+                break
+    return count
+
+
+def _count_enemies_in_blast(r: int, c: int, radius: int, game_map: np.ndarray,
+                             players: np.ndarray, agent_id: int) -> int:
+    """Count enemy agents in blast lines from (r, c)."""
+    count = 0
+    for dr, dc in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
+        for step in range(1, radius + 1):
+            nr, nc = r + dr * step, c + dc * step
+            if nr < 0 or nr >= BOARD_SIZE or nc < 0 or nc >= BOARD_SIZE:
+                break
+            if game_map[nr, nc] == TILE_WALL:
+                break
+            for i, p in enumerate(players):
+                if i != agent_id and int(p[2]) == 1:
+                    if int(p[0]) == nr and int(p[1]) == nc:
+                        count += 1
+            if game_map[nr, nc] == TILE_BOX:
+                break
+    return count
+
+
+def _count_safe_neighbors(obs: dict, my_r: int, my_c: int) -> int:
+    """Count adjacent cells that are passable and not in immediate danger."""
+    from train_models.state_processor import _is_passable, _bomb_set, compute_danger_map
+    game_map = np.asarray(obs["map"], dtype=np.int32)
+    bset = _bomb_set(np.asarray(obs["bombs"], dtype=np.int32))
+    danger = compute_danger_map(game_map, np.asarray(obs["players"], dtype=np.int32), obs["bombs"])
+    count = 0
+    for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+        nr, nc = my_r + dr, my_c + dc
+        if _is_passable(nr, nc, game_map, bset) and danger[nr, nc] > 2:
+            count += 1
+    return count
+
+
+def _min_enemy_distance(players: np.ndarray, agent_id: int, my_r: int, my_c: int) -> int:
+    """Manhattan distance to nearest alive enemy, or None."""
+    best = None
+    for i, p in enumerate(players):
+        if i == agent_id or not int(p[2]):
+            continue
+        dist = abs(my_r - int(p[0])) + abs(my_c - int(p[1]))
+        if best is None or dist < best:
+            best = dist
+    return best
+
+
 def compute_reward(
     obs_before: dict,
     obs_after: dict,
@@ -208,9 +310,11 @@ def compute_reward(
     action: int,
     terminated: bool,
     truncated: bool,
+    position_history: list = None,
+    visited_cells: set = None,
 ) -> tuple:
     """
-    Compute shaped reward for a single agent step.
+    Compute dense shaped reward for a single agent step.
 
     Returns:
         reward: float
@@ -221,42 +325,70 @@ def compute_reward(
     game_map_before = np.asarray(obs_before["map"], dtype=np.int32)
     game_map_after = np.asarray(obs_after["map"], dtype=np.int32)
 
+    p_before = players_before[agent_id]
+    p_after = players_after[agent_id]
+    alive_before = int(p_before[2])
+    alive_after = int(p_after[2])
+    my_r, my_c = int(p_after[0]), int(p_after[1])
+    prev_r, prev_c = int(p_before[0]), int(p_before[1])
+
     reward = 0.0
     info = {}
 
-    # Living reward
+    # ── Terminal rewards ───────────────────────────────────────────────────
+
+    if alive_before == 1 and alive_after == 0:
+        # Own-bomb death detection
+        if _detect_own_bomb_death(obs_before, obs_after, agent_id):
+            reward += REWARD_OWN_BOMB_DEATH
+            info["own_bomb_death"] = REWARD_OWN_BOMB_DEATH
+        else:
+            reward += REWARD_DEATH
+            info["death"] = REWARD_DEATH
+        info["total"] = reward
+        return reward, info
+
+    if terminated:
+        total_alive = sum(1 for p in players_after if int(p[2]) == 1)
+        if alive_after and total_alive == 1:
+            r_win = REWARD_WIN
+            reward += r_win
+            info["win"] = r_win
+            info["total"] = reward
+            return reward, info
+
+    if not alive_after:
+        info["total"] = reward
+        return reward, info
+
+    # ── Survival (small, anti-early-suicide) ────────────────────────────────
     reward += REWARD_LIVING
     info["living"] = REWARD_LIVING
 
-    # Box destroyed by anyone (rough proxy; training agent gets credit)
+    # ── Box destruction ─────────────────────────────────────────────────────
     boxes_before = _count_boxes(game_map_before)
     boxes_after = _count_boxes(game_map_after)
     boxes_destroyed = boxes_before - boxes_after
     if boxes_destroyed > 0:
-        r_box = REWARD_BOX_DESTROYED * boxes_destroyed
+        r_box = min(REWARD_BOX_DESTROYED * boxes_destroyed, 6.0)
         reward += r_box
         info["box"] = r_box
+    else:
+        info["box"] = 0.0
 
-    # Item collected by training agent
-    bonus_before = int(players_before[agent_id][4])
-    bonus_after = int(players_after[agent_id][4])
-    bombs_before = int(players_before[agent_id][3])
-    bombs_after = int(players_after[agent_id][3])
-    if bonus_after > bonus_before or bombs_after > bombs_before:
+    # ── Item collection ─────────────────────────────────────────────────────
+    bonus_before = int(p_before[4])
+    bonus_after = int(p_after[4])
+    bombs_cap_before = int(p_before[3])
+    bombs_cap_after = int(p_after[3])
+    if bonus_after > bonus_before or bombs_cap_after > bombs_cap_before:
         r_item = REWARD_ITEM_COLLECTED
         reward += r_item
         info["item"] = r_item
     else:
         info["item"] = 0.0
 
-    # Death
-    alive_before = int(players_before[agent_id][2])
-    alive_after = int(players_after[agent_id][2])
-    if alive_before == 1 and alive_after == 0:
-        reward += REWARD_DEATH
-        info["death"] = REWARD_DEATH
-
-    # Kill
+    # ── Kills ───────────────────────────────────────────────────────────────
     enemies_before = sum(1 for i, p in enumerate(players_before) if i != agent_id and int(p[2]) == 1)
     enemies_after = sum(1 for i, p in enumerate(players_after) if i != agent_id and int(p[2]) == 1)
     kills = enemies_before - enemies_after
@@ -267,23 +399,83 @@ def compute_reward(
     else:
         info["kill"] = 0.0
 
-    # Win: training agent is sole survivor
-    if terminated:
-        total_alive = sum(1 for p in players_after if int(p[2]) == 1)
-        if alive_after and total_alive == 1:
-            reward += REWARD_WIN
-            info["win"] = REWARD_WIN
-        else:
-            info["win"] = 0.0
-
-    # Bomb placed
+    # ── Bomb placement ──────────────────────────────────────────────────────
     if action == A_BOMB:
-        reward += REWARD_BOMB_PLACED
-        info["bomb_placed"] = REWARD_BOMB_PLACED
+        radius = 1 + int(p_before[4])
+        boxes_hit = _count_boxes_in_blast(my_r, my_c, radius, game_map_before)
+        enemies_threatened = _count_enemies_in_blast(
+            my_r, my_c, radius, game_map_before, players_before, agent_id
+        )
+        r_bomb = REWARD_BOMB_PLACED + REWARD_BOMB_BOX_HIT * boxes_hit + REWARD_BOMB_ENEMY_THREAT * enemies_threatened
+        reward += r_bomb
+        info["bomb_placed"] = r_bomb
     else:
         info["bomb_placed"] = 0.0
 
-    # Danger zone penalty is applied in the agent step, not here
+    # ── Bomb hoarding ───────────────────────────────────────────────────────
+    if int(p_after[3]) > 0 and action != A_BOMB:
+        safe_mask = get_action_mask(obs_after, agent_id)
+        if safe_mask[A_BOMB]:
+            reward += REWARD_BOMB_HOARDING
+            info["bomb_hoarding"] = REWARD_BOMB_HOARDING
+
+    # ── STOP penalty ────────────────────────────────────────────────────────
+    if action == A_STOP:
+        reward += REWARD_STOP_PENALTY
+        info["stop_penalty"] = REWARD_STOP_PENALTY
+
+    # ── Escape margin ───────────────────────────────────────────────────────
+    safe_count = _count_safe_neighbors(obs_after, my_r, my_c)
+    if safe_count <= 1:
+        reward += REWARD_ESCAPE_MARGIN_LOW
+        info["escape_margin"] = REWARD_ESCAPE_MARGIN_LOW
+    elif safe_count >= 3:
+        reward += REWARD_ESCAPE_MARGIN_HIGH
+        info["escape_margin"] = REWARD_ESCAPE_MARGIN_HIGH
+    else:
+        info["escape_margin"] = 0.0
+
+    # ── Loop / revisit detection ────────────────────────────────────────────
+    current_pos = (my_r, my_c)
+    if position_history is not None:
+        position_history.append(current_pos)
+        if len(position_history) >= 5:
+            recent = position_history[-5:]
+            unique = len(set(recent))
+            if unique <= 2:
+                reward += REWARD_LOOP_PENALTY
+                info["loop_penalty"] = REWARD_LOOP_PENALTY
+            if position_history.count(current_pos) >= 3:
+                reward += REWARD_REVISIT_PENALTY
+                info["revisit_penalty"] = REWARD_REVISIT_PENALTY
+
+    # ── Exploration: enter new cell ─────────────────────────────────────────
+    if visited_cells is not None and current_pos not in visited_cells:
+        reward += REWARD_ENTER_NEW_CELL
+        info["new_cell"] = REWARD_ENTER_NEW_CELL
+        visited_cells.add(current_pos)
+
+    # ── Late-game pressure ──────────────────────────────────────────────────
+    step = int(obs_after.get("step", obs_after.get("current_step", 0)) or 0)
+    progress = step / max(MAX_STEPS, 1)
+    if progress > 0.6:
+        alive_enemies = sum(
+            1 for i, pp in enumerate(players_after)
+            if i != agent_id and int(pp[2])
+        )
+        if alive_enemies > 0:
+            enemy_dist = _min_enemy_distance(players_after, agent_id, my_r, my_c)
+            reward += REWARD_LATEGAME_SURVIVAL
+            info["lategame_survival"] = REWARD_LATEGAME_SURVIVAL
+            if enemy_dist is not None and enemy_dist <= 5:
+                reward += REWARD_LATEGAME_PROXIMITY
+                info["lategame_proximity"] = REWARD_LATEGAME_PROXIMITY
+
+    # ── Center control ──────────────────────────────────────────────────────
+    center = (6, 6)
+    center_dist = abs(my_r - center[0]) + abs(my_c - center[1])
+    reward += REWARD_CENTER_CONTROL * (1.0 - center_dist / 12.0)
+    info["center"] = REWARD_CENTER_CONTROL * (1.0 - center_dist / 12.0)
 
     info["total"] = reward
     return reward, info
@@ -340,6 +532,7 @@ class Trainer:
 
         # Model & optimizer
         self.model = ActorCritic().to(self.device)
+        self._warmstart_cnn_from_aux()
         self.agent = PPOAgent(
             model=self.model,
             lr=learning_rate,
@@ -419,13 +612,16 @@ class Trainer:
 
         # Track previous observations for reward computation
         prev_obs = [None] * self.num_envs
+        # Per-env exploration state (reset on episode boundary)
+        position_history = [[] for _ in range(self.num_envs)]
+        visited_cells = [set() for _ in range(self.num_envs)]
 
         for step_idx in range(self.rollout_steps):
             actions_arr = np.zeros(self.num_envs, dtype=np.int64)
             values_arr = np.zeros(self.num_envs, dtype=np.float32)
             logps_arr = np.zeros(self.num_envs, dtype=np.float32)
             masks_arr = np.zeros((self.num_envs, ACTION_SPACE), dtype=bool)
-            obs_arr = np.zeros((self.num_envs, 7, 13, 13), dtype=np.float32)
+            obs_arr = np.zeros((self.num_envs, STATE_CHANNELS_V2, 13, 13), dtype=np.float32)
             scal_arr = np.zeros((self.num_envs, 4), dtype=np.float32)
             rewards_arr = np.zeros(self.num_envs, dtype=np.float32)
             dones_arr = np.zeros(self.num_envs, dtype=np.float32)
@@ -455,6 +651,8 @@ class Trainer:
                     prev_obs_snapshots[i], next_obs,
                     self.training_slots[i], train_action,
                     terminated, truncated,
+                    position_history[i],
+                    visited_cells[i],
                 )
                 rewards_arr[i] = reward
                 dones_arr[i] = float(terminated or truncated)
@@ -474,6 +672,10 @@ class Trainer:
                     seed_i = self.seed + self.total_env_steps + i * 1000
                     self.env_obs[i] = self.runners[i].reset(seed=seed_i)
                     self.opponents[i] = self.pool.sample_opponents(3, self.training_slots[i])
+
+                    # Reset exploration state
+                    position_history[i] = []
+                    visited_cells[i] = set()
 
                     # Log episode
                     ep_reward = sum(self.episode_rewards[i])
@@ -499,12 +701,10 @@ class Trainer:
         next_values = np.zeros(self.num_envs, dtype=np.float32)
         next_dones = np.zeros(self.num_envs, dtype=np.float32)
         for i in range(self.num_envs):
-            state_t, scalar_t = encode_observation(self.env_obs[i], self.training_slots[i])
+            state_t, scalar_t = encode_observation_v2(self.env_obs[i], self.training_slots[i])
             obs_b = state_t.unsqueeze(0).to(self.device)
             scal_b = scalar_t.unsqueeze(0).to(self.device)
             next_values[i] = float(self.model.get_value(obs_b, scal_b).item())
-            # Check if current episode is done (env was just reset mid-rollout)
-            next_dones[i] = 0.0  # We handle this in GAE via the dones we stored
 
         # PPO update
         metrics = self.agent.update(buffer, next_values, next_dones)
@@ -517,6 +717,66 @@ class Trainer:
         self.writer.add_scalar("train/total_steps", self.total_env_steps, self.global_step)
 
         return True
+
+    def _warmstart_cnn_from_aux(self):
+        """
+        Warm-start the ActorCritic CNN backbone from a pretrained auxiliary model.
+
+        The aux model (BomberAuxModel) was trained on 19-channel observations with
+        11 auxiliary prediction tasks (death, escape, box value, etc.). Its CNN
+        layers learned useful spatial feature detectors.
+
+        Since the aux model has different input channels (19 vs 16), we only copy
+        layers 2 and 3 (32→64 and 64→64 Conv2d weights). The first layer is
+        initialized randomly as usual. BatchNorm layers are left at their default
+        (gamma=1, beta=0) since the aux model has none.
+        """
+        aux_path = AUX_CHECKPOINT_PATH
+        if not aux_path.exists():
+            print(f"[Trainer] Aux checkpoint not found at {aux_path} — skipping warm-start")
+            return
+
+        print(f"[Trainer] Warm-starting CNN from {aux_path}")
+        try:
+            aux_ckpt = torch.load(aux_path, map_location=self.device, weights_only=False)
+        except Exception as e:
+            print(f"[Trainer] Failed to load aux checkpoint: {e} — skipping warm-start")
+            return
+
+        # Extract aux encoder Conv2d weights
+        # Aux encoder: Conv2d(19,32)→ReLU→Conv2d(32,64)→ReLU→Conv2d(64,64)→ReLU
+        aux_state = aux_ckpt.get("model_state_dict", aux_ckpt)
+        aux_conv_keys = [k for k in aux_state if "encoder" in k and "weight" in k and "conv" not in k]
+        # Map: encoder.0.weight → Conv2d(19,32), encoder.2.weight → Conv2d(32,64), encoder.4.weight → Conv2d(64,64)
+
+        # Our CNN: cnn.conv[0]=Conv2d(16,32), cnn.conv[3]=Conv2d(32,64), cnn.conv[6]=Conv2d(64,64)
+        # Only copy layers 2 and 3 (32→64 and 64→64) — same dimensions
+
+        mapping = [
+            # (aux_key_pattern, our_param_name)
+            # Skip encoder.0 (19→32 vs 16→32)
+            ("encoder.2.weight", "cnn.conv.3.weight"),
+            ("encoder.2.bias", "cnn.conv.3.bias"),
+            ("encoder.4.weight", "cnn.conv.6.weight"),
+            ("encoder.4.bias", "cnn.conv.6.bias"),
+        ]
+
+        copied = 0
+        model_state = self.model.state_dict()
+        for aux_key, our_key in mapping:
+            if aux_key in aux_state and our_key in model_state:
+                if aux_state[aux_key].shape == model_state[our_key].shape:
+                    model_state[our_key] = aux_state[aux_key].clone()
+                    copied += 1
+                else:
+                    print(f"[Trainer] Shape mismatch for {aux_key}: "
+                          f"{aux_state[aux_key].shape} vs {model_state[our_key].shape}")
+            else:
+                print(f"[Trainer] Key not found: aux={aux_key} in aux={aux_key in aux_state}, "
+                      f"our={our_key} in model={our_key in model_state}")
+
+        self.model.load_state_dict(model_state)
+        print(f"[Trainer] Warm-started {copied}/{len(mapping)} CNN parameters from aux checkpoint")
 
     def evaluate(self, num_episodes: int = 20) -> dict:
         """Evaluate the current policy against rule-based opponents."""
@@ -558,7 +818,7 @@ class Trainer:
                     opp_idx += 1
 
                 next_obs, terminated, truncated = env.step(actions)
-                reward, _ = compute_reward(prev_obs, next_obs, training_slot, train_action, terminated, truncated)
+                reward, _ = compute_reward(prev_obs, next_obs, training_slot, train_action, terminated, truncated, None, None)
                 ep_reward += reward
                 obs = next_obs
 

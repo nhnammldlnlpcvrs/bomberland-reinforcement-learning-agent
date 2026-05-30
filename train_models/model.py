@@ -4,6 +4,7 @@ Lightweight CNN Actor-Critic with Action Masking for Bomberland.
 Architecture:
   CNN backbone: 3 × Conv2d(3×3, stride=1, pad=1) + BatchNorm + ReLU
                 channels 32 → 64 → 64, 13×13 spatial preserved
+                input channels: 16 (v2) or 64 (temporal 4-frame stack)
   FC:           Flatten(64×13×13) + ScalarFeats(4) → Linear(128) → ReLU
   Actor head:   Linear(128 → 6) for action logits
   Critic head:  Linear(128 → 1) for state value
@@ -20,6 +21,7 @@ from train_models.config import (
     FC_HIDDEN,
     SCALAR_FEATURES,
     STATE_CHANNELS,
+    STATE_CHANNELS_V2,
 )
 
 
@@ -62,7 +64,7 @@ class ActorCritic(nn.Module):
 
     def __init__(
         self,
-        obs_channels: int = STATE_CHANNELS,
+        obs_channels: int = STATE_CHANNELS_V2,
         scalar_dim: int = SCALAR_FEATURES,
         cnn_channels: list = None,
         fc_hidden: int = FC_HIDDEN,
@@ -111,7 +113,7 @@ class ActorCritic(nn.Module):
     ) -> tuple:
         """
         Args:
-            obs:     (B, 7, 13, 13) spatial channels
+            obs:     (B, C, 13, 13) spatial channels (16 v2, 64 temporal)
             scalars: (B, 4) scalar features
 
         Returns:
@@ -137,7 +139,7 @@ class ActorCritic(nn.Module):
         Sample an action with optional masking.
 
         Args:
-            obs:         (1, 7, 13, 13) or (B, 7, 13, 13)
+            obs:         (1, C, 13, 13) or (B, C, 13, 13)
             scalars:     (1, 4) or (B, 4)
             action_mask: (1, 6) or (B, 6) bool tensor, True = legal
             deterministic: if True, argmax over legal actions

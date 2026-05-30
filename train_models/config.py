@@ -72,18 +72,49 @@ MAX_BOMB_CAPACITY = 5
 # ── Network Architecture ────────────────────────────────────────────────────────
 CNN_CHANNELS = [32, 64, 64]
 FC_HIDDEN = 128
-STATE_CHANNELS = 7
+STATE_CHANNELS = 7       # legacy 7-channel encoder
+STATE_CHANNELS_V2 = 16   # production 16-channel encoder
 SCALAR_FEATURES = 4
+FRAME_STACK = 4          # temporal frame stacking (4×16=64 channels)
 
 # ── Rewards ──────────────────────────────────────────────────────────────────────
-REWARD_DEATH = -10.0
-REWARD_WIN = 10.0
-REWARD_LIVING = 0.01
-REWARD_BOX_DESTROYED = 0.2
-REWARD_ITEM_COLLECTED = 0.5
+# Terminal
+REWARD_DEATH = -15.0
+REWARD_OWN_BOMB_DEATH = -25.0
+REWARD_WIN = 50.0
+REWARD_KILL = 12.0
+
+# Survival / progress
+REWARD_LIVING = 0.03
+REWARD_BOX_DESTROYED = 1.5          # per box, capped at 6.0
+REWARD_ITEM_COLLECTED = 3.0
+REWARD_BOMB_PLACED = 0.5            # base
+
+# Action shaping
+REWARD_STOP_PENALTY = -0.05
+REWARD_BOMB_HOARDING = -0.02        # bomb available + safe to place + didn't place
+REWARD_LOOP_PENALTY = -0.3
+REWARD_REVISIT_PENALTY = -0.2
+
+# Safety / escape
 REWARD_DANGER_ZONE = -0.1
-REWARD_BOMB_PLACED = 0.05
-REWARD_KILL = 2.0
+REWARD_ESCAPE_MARGIN_HIGH = 0.05    # >=3 safe neighbors
+REWARD_ESCAPE_MARGIN_LOW = -0.5     # <=1 safe neighbor
+REWARD_BOMB_ESCAPE_SUCCESS = 120.0
+REWARD_TRAPPED_AFTER_BOMB = -140.0
+
+# Exploration / territory
+REWARD_ENTER_NEW_CELL = 5.0
+REWARD_REACHABLE_INCREASE = 5.0
+REWARD_CENTER_CONTROL = 0.01
+
+# Late-game pressure
+REWARD_LATEGAME_SURVIVAL = 0.02
+REWARD_LATEGAME_PROXIMITY = 0.05    # within 5 cells of enemy after 60% progress
+
+# Bomb expected-value bonuses
+REWARD_BOMB_BOX_HIT = 0.5           # per box in blast
+REWARD_BOMB_ENEMY_THREAT = 1.5      # per enemy in blast line
 
 # ── Paths ────────────────────────────────────────────────────────────────────────
 CHECKPOINT_DIR = ROOT / "train_models" / "checkpoints"
@@ -93,6 +124,9 @@ LOG_DIR = ROOT / "train_models" / "logs"
 # ── Inference (competition submission) ──────────────────────────────────────────
 # Best checkpoint exported for submission is the one with highest eval win-rate.
 BEST_MODEL_PATH = CHECKPOINT_DIR / "best_model.pth"
+
+# ── Warm-start ──────────────────────────────────────────────────────────────────
+AUX_CHECKPOINT_PATH = ROOT / "ml" / "checkpoints" / "rl_agent_pure" / "aux_curriculum_model_v3.pt"
 
 # ── Agent pool (self-play) ──────────────────────────────────────────────────────
 POOL_MAX_SIZE = 20           # keep at most N historical checkpoints
