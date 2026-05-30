@@ -1,0 +1,7 @@
+{
+  "agent_type": "recurrent_ppo",
+  "base_channels": 19,
+  "observation_shape": [19, 13, 13],
+  "uses_lstm_state": true,
+  "note": "Research-only RecurrentPPO agent. Do not promote without benchmark gates."
+}

@@ -1,0 +1,23 @@
+{
+  "policy": "ml/checkpoints/rl_agent_pure/ppo_bomb_selector_best.zip",
+  "opponents": [
+    "random",
+    "simple"
+  ],
+  "episodes": 100,
+  "max_steps": 300,
+  "output": "ml\\datasets\\bomb_counterfactual_negatives.npz",
+  "candidate_states_scanned": 2467,
+  "negatives_generated": 2467,
+  "reason_counts": {
+    "no_escape_after_bomb": 14,
+    "dangerous_current_or_future": 17,
+    "escape_path_too_narrow": 2,
+    "dead_end_after_bomb": 0,
+    "no_value_no_pressure": 2434
+  },
+  "nearby_box_count_mean": 1.2432103769760843,
+  "would_destroy_boxes_mean": 0.002026753141467369,
+  "has_escape_rate": 0.9894608836643697,
+  "value_proxy_count": 2467
+}

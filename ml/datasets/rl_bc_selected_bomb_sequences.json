@@ -1,0 +1,18 @@
+{
+  "input": "ml/datasets/rl_bc_bomb_escape.npz",
+  "model": "ml/checkpoints/rl_agent_pure/bomb_value_model.pt",
+  "output": "ml\\datasets\\rl_bc_selected_bomb_sequences.npz",
+  "threshold": 0.6,
+  "selected_bomb_contexts": 427,
+  "escape_sample_count": 1464,
+  "escape_action_distribution": {
+    "0": 0,
+    "1": 444,
+    "2": 353,
+    "3": 330,
+    "4": 337,
+    "5": 0
+  },
+  "boxes_destroyed_mean": 2.037470725995316,
+  "selector_prob_mean": 0.7336757183074951
+}

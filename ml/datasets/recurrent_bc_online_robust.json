@@ -1,0 +1,20 @@
+{
+  "episodes": 300,
+  "total_steps": 32979,
+  "max_len": 500,
+  "action_distribution": {
+    "0": 7981,
+    "1": 6357,
+    "2": 6470,
+    "3": 5894,
+    "4": 5886,
+    "5": 391
+  },
+  "place_bomb_fraction": 0.011856029594590497,
+  "post_bomb_escape_fraction": 0.08417477788895963,
+  "avg_survival_step": 109.93,
+  "teacher_win_rate": 0.9533333333333334,
+  "teacher_draw_rate": 0.04666666666666667,
+  "teacher_death_rate": 0.0,
+  "output": "ml\\datasets\\recurrent_bc_online_robust.npz"
+}

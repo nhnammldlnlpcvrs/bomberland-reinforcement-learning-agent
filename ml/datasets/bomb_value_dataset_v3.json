@@ -1,0 +1,30 @@
+{
+  "base_dataset": "ml/datasets/bomb_value_dataset.npz",
+  "rollout_hard_negatives": "ml/datasets/bomb_hard_negatives.npz",
+  "counterfactual_negatives": "ml/datasets/bomb_counterfactual_negatives.npz",
+  "output": "ml\\datasets\\bomb_value_dataset_v3.npz",
+  "samples": 4004,
+  "positive_count": 506,
+  "easy_negative_count": 1012,
+  "rollout_hard_negative_count": 19,
+  "counterfactual_negative_count": 2467,
+  "positive_fraction": 0.12637363374233246,
+  "sample_type_distribution": {
+    "1": 506,
+    "2": 1012,
+    "3": 19,
+    "4": 2467
+  },
+  "counterfactual_reason_distribution": {
+    "1": 14,
+    "2": 17,
+    "3": 2,
+    "5": 2434
+  },
+  "weights": {
+    "positive": 1.0,
+    "easy_negative": 1.0,
+    "rollout_hard_negative": 4.0,
+    "counterfactual_negative": 5.0
+  }
+}

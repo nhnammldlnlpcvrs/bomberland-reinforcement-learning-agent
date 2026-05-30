@@ -1,0 +1,14 @@
+{
+  "samples": 78,
+  "mode_counts": {
+    "escape_only": 5,
+    "bomb_then_escape": 5,
+    "bomb_box_value": 5
+  },
+  "death_within_7_rate": 0.0,
+  "escaped_blast_rate": 0.38461539149284363,
+  "own_bomb_recent_rate": 0.9102563858032227,
+  "has_escape_after_bomb_rate": 0.7948718070983887,
+  "trapped_if_bomb_rate": 0.20512820780277252,
+  "would_destroy_boxes_mean": 0.6794871687889099
+}

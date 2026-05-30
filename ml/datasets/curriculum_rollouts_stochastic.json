@@ -1,0 +1,15 @@
+{
+  "samples": 11344,
+  "episodes_per_mode": 50,
+  "mode_counts": {
+    "escape_only": 50,
+    "bomb_then_escape": 50,
+    "bomb_box_value": 50,
+    "full_game_mix": 50
+  },
+  "death_within_7_rate": 0.010754584334790707,
+  "escaped_blast_rate": 0.006523272022604942,
+  "own_bomb_recent_rate": 0.02565232664346695,
+  "boxes_destroyed_future_mean": 0.31840619444847107,
+  "reachable_area_delta_mean": -0.04310648888349533
+}

@@ -1,0 +1,18 @@
+{
+  "samples": 116881,
+  "action_distribution": {
+    "0": 28290,
+    "1": 22669,
+    "2": 22600,
+    "3": 21034,
+    "4": 20841,
+    "5": 1447
+  },
+  "bomb_samples": 1447,
+  "bomb_fraction": 0.012380113106492929,
+  "post_bomb_escape_samples": 9402,
+  "survived_bomb_context_samples": 9845,
+  "avg_boxes_destroyed_after_bomb": 0.06550251965674489,
+  "skipped_illegal": 0,
+  "output": "ml\\datasets\\rl_bc_bomb_escape.npz"
+}

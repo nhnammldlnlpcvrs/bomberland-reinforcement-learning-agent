@@ -1,0 +1,16 @@
+{
+  "samples": 1738,
+  "action_distribution": {
+    "0": 417,
+    "1": 338,
+    "2": 343,
+    "3": 296,
+    "4": 327,
+    "5": 17
+  },
+  "bomb_samples": 17,
+  "bomb_fraction": 0.009781357882623706,
+  "post_bomb_escape_samples": 114,
+  "skipped_illegal": 0,
+  "output": "ml\\datasets\\rl_bc_smoke.npz"
+}
