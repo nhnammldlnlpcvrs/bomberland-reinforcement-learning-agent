@@ -1,0 +1,15 @@
+stage: stage2
+description: Add stronger baseline opponents after stage1 passes gates.
+frame_stack: 4
+opponents:
+  - random
+  - simple
+  - online_robust
+  - hybrid_agent_rl
+learning_rate: 0.00005
+ent_coef: 0.01
+clip_range: 0.1
+target_kl: 0.01
+n_steps: 512
+batch_size: 256
+objective: robust survival and better score against stronger local baselines

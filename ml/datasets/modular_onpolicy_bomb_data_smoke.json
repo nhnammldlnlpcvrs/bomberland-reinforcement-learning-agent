@@ -1,0 +1,21 @@
+{
+  "output": "ml\\datasets\\modular_onpolicy_bomb_data_smoke.npz",
+  "total_states_collected": 60,
+  "bomb_decisions": 21,
+  "zero_value_bombs": 9,
+  "death_after_bomb": 4,
+  "useful_bombs": 8,
+  "safe_nonbomb_candidates": 33,
+  "potential_bomb_avoided": 6,
+  "action_distribution": {
+    "0": 245,
+    "1": 33,
+    "2": 37,
+    "3": 41,
+    "4": 29,
+    "5": 22
+  },
+  "label_value_positive": 8,
+  "label_zero_value": 43,
+  "label_death_after_bomb": 4
+}

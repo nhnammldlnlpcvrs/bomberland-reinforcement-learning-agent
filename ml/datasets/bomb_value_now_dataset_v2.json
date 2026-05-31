@@ -1,0 +1,15 @@
+{
+  "total_count": 10096,
+  "positive_count": 659,
+  "source_distribution": {
+    "safe_value_positive": 180,
+    "synthetic_safe_zero_negative": 1200,
+    "synthetic_unsafe_negative": 1320,
+    "onpolicy_zero_value_negative": 244,
+    "onpolicy_death_negative": 295,
+    "onpolicy_useful_positive": 479,
+    "onpolicy_safe_nonbomb_negative": 4915,
+    "onpolicy_potential_bomb_avoided_negative": 1463
+  },
+  "positive_fraction": 0.06527337559429477
+}

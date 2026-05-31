@@ -22,10 +22,12 @@ from train_models.config import (
     GAE_LAMBDA,
     GAMMA,
     MAX_GRAD_NORM,
+    PIN_MEMORY,
     PPO_CLIP,
     SCALAR_FEATURES,
     STATE_CHANNELS_V2,
     UPDATE_EPOCHS,
+    USE_AMP,
     VALUE_COEF,
 )
 from train_models.state_processor import encode_observation_v2, get_action_mask
@@ -156,6 +158,7 @@ class PPOAgent:
         self.max_grad_norm = max_grad_norm
 
         self.optimizer = optim.Adam(self.model.parameters(), lr=lr, eps=1e-5)
+        self.scaler = torch.cuda.amp.GradScaler(enabled=USE_AMP) if USE_AMP else None
 
     @torch.no_grad()
     def select_action(
@@ -237,39 +240,45 @@ class PPOAgent:
                 batch_returns = returns_tensor[batch_idx]
                 batch_advantages = advantages_tensor[batch_idx]
 
-                # Evaluate current policy on old actions
-                new_log_probs, values, entropy = self.model.evaluate_actions(
-                    batch_obs, batch_scalars, batch_actions, action_mask=batch_masks
-                )
+                # Evaluate current policy on old actions (with AMP if enabled)
+                with torch.amp.autocast("cuda", enabled=USE_AMP):
+                    new_log_probs, values, entropy = self.model.evaluate_actions(
+                        batch_obs, batch_scalars, batch_actions, action_mask=batch_masks
+                    )
 
-                # PPO clipped objective
-                ratio = torch.exp(new_log_probs - batch_old_log_probs)
-                surr1 = ratio * batch_advantages
-                surr2 = torch.clamp(ratio, 1.0 - self.clip_range, 1.0 + self.clip_range) * batch_advantages
-                policy_loss = -torch.min(surr1, surr2).mean()
+                    # PPO clipped objective
+                    ratio = torch.exp(new_log_probs - batch_old_log_probs)
+                    surr1 = ratio * batch_advantages
+                    surr2 = torch.clamp(ratio, 1.0 - self.clip_range, 1.0 + self.clip_range) * batch_advantages
+                    policy_loss = -torch.min(surr1, surr2).mean()
 
-                # Value loss — clipped PPO style
-                # Reconstruct old values from returns and GAE advantages
-                # returns = advantages + old_values → old_values = returns - advantages
-                old_values = batch_returns - batch_advantages
-                value_pred = values.squeeze(-1)
-                value_pred_clipped = old_values + torch.clamp(
-                    value_pred - old_values, -self.clip_range, self.clip_range
-                )
-                value_loss_unclipped = (value_pred - batch_returns).pow(2)
-                value_loss_clipped = (value_pred_clipped - batch_returns).pow(2)
-                value_loss = 0.5 * torch.max(value_loss_unclipped, value_loss_clipped).mean()
+                    # Value loss — clipped PPO style
+                    old_values = batch_returns - batch_advantages
+                    value_pred = values.squeeze(-1)
+                    value_pred_clipped = old_values + torch.clamp(
+                        value_pred - old_values, -self.clip_range, self.clip_range
+                    )
+                    value_loss_unclipped = (value_pred - batch_returns).pow(2)
+                    value_loss_clipped = (value_pred_clipped - batch_returns).pow(2)
+                    value_loss = 0.5 * torch.max(value_loss_unclipped, value_loss_clipped).mean()
 
-                # Entropy bonus
-                entropy_mean = entropy.mean()
+                    # Entropy bonus
+                    entropy_mean = entropy.mean()
 
-                # Total loss
-                loss = policy_loss + self.vf_coef * value_loss - self.ent_coef * entropy_mean
+                    # Total loss (scale for AMP stability)
+                    loss = policy_loss + self.vf_coef * value_loss - self.ent_coef * entropy_mean
 
                 self.optimizer.zero_grad()
-                loss.backward()
-                nn.utils.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
-                self.optimizer.step()
+                if self.scaler is not None:
+                    self.scaler.scale(loss).backward()
+                    self.scaler.unscale_(self.optimizer)
+                    nn.utils.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
+                    self.scaler.step(self.optimizer)
+                    self.scaler.update()
+                else:
+                    loss.backward()
+                    nn.utils.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
+                    self.optimizer.step()
 
                 # Approximate KL
                 with torch.no_grad():
@@ -282,16 +291,27 @@ class PPOAgent:
 
         return {k: float(np.mean(v)) for k, v in epoch_metrics.items()}
 
-    def save(self, path: str):
-        torch.save({
+    def save(self, path: str, extra_state: dict = None):
+        checkpoint = {
             "model_state_dict": self.model.state_dict(),
             "optimizer_state_dict": self.optimizer.state_dict(),
-        }, path)
+        }
+        if self.scaler is not None:
+            checkpoint["scaler_state_dict"] = self.scaler.state_dict()
+        if extra_state:
+            checkpoint.update(extra_state)
+        torch.save(checkpoint, path)
 
     def load(self, path: str):
         checkpoint = torch.load(path, map_location=self.device, weights_only=False)
         self.model.load_state_dict(checkpoint["model_state_dict"])
         self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        if "scaler_state_dict" in checkpoint and self.scaler is not None:
+            try:
+                self.scaler.load_state_dict(checkpoint["scaler_state_dict"])
+            except Exception:
+                pass
+        return checkpoint
 
     def save_weights_only(self, path: str):
         """Export only model weights for inference (smaller file)."""

@@ -69,6 +69,9 @@ BOMB_TIMER = 7
 MAX_BOMB_RADIUS = 5
 MAX_BOMB_CAPACITY = 5
 
+# ── BFS / search limits ────────────────────────────────────────────────────────
+BFS_MAX_DEPTH = 12             # hard cutoff for all BFS routines (13x13 grid)
+
 # ── Network Architecture ────────────────────────────────────────────────────────
 CNN_CHANNELS = [32, 64, 64]
 FC_HIDDEN = 128
@@ -111,6 +114,12 @@ REWARD_CENTER_CONTROL = 0.01
 # Late-game pressure
 REWARD_LATEGAME_SURVIVAL = 0.02
 REWARD_LATEGAME_PROXIMITY = 0.05    # within 5 cells of enemy after 60% progress
+LATEGAME_PRESSURE_START = 350       # step when exponential kill scaling begins
+REWARD_KILL_MAX = 30.0              # kill reward at step 500 (scales from 12.0)
+REWARD_CORNER_CAMPING = -0.5        # penalty for staying in corners late game
+
+# Opponent trapping
+REWARD_OPPONENT_TRAP = 25.0         # bonus for trapping an enemy in a dead-end
 
 # Bomb expected-value bonuses
 REWARD_BOMB_BOX_HIT = 0.5           # per box in blast
@@ -139,6 +148,8 @@ POOL_INITIAL_AGENTS = [      # rule-based agents seeded into pool at start
 # ── Device ───────────────────────────────────────────────────────────────────────
 import torch
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+USE_AMP = DEVICE == "cuda"     # automatic mixed precision on GPU only
+PIN_MEMORY = DEVICE == "cuda"  # pinned memory for faster CPU→GPU transfers
 
 
 def ensure_dirs():

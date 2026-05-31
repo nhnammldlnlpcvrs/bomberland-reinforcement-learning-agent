@@ -4,12 +4,12 @@ import torch
 import torch.nn as nn
 
 
-class ModularBomberCnnLstm(nn.Module):
-    """PyTorch-only modular recurrent BC model.
+class BombOutcomeCnnLstm(nn.Module):
+    """CNN-LSTM outcome predictor for offline bomb decision analysis.
 
-    The shared CNN-LSTM learns temporal state features, while task-specific heads
-    keep movement, bomb decision, and post-bomb escape objectives from fighting
-    over one shared 6-way action head.
+    This intentionally mirrors the modular recurrent BC backbone so existing
+    movement/bomb/escape checkpoints can initialize the representation, while
+    the outcome heads stay training-only.
     """
 
     def __init__(
@@ -53,11 +53,19 @@ class ModularBomberCnnLstm(nn.Module):
             dropout=lstm_dropout,
             batch_first=True,
         )
+
+        # Existing modular heads are kept only for checkpoint compatibility.
         self.movement_head = nn.Linear(self.hidden_size, 5)
         self.bomb_head = nn.Linear(self.hidden_size, 1)
         self.bomb_value_head = nn.Linear(self.hidden_size, 1)
         self.escape_head = nn.Linear(self.hidden_size, 5)
         self.action_head = nn.Linear(self.hidden_size, 6) if self.include_action_head else None
+
+        self.box_value_head = nn.Linear(self.hidden_size, 1)
+        self.death_risk_head = nn.Linear(self.hidden_size, 1)
+        self.zero_value_head = nn.Linear(self.hidden_size, 1)
+        self.escape_success_head = nn.Linear(self.hidden_size, 1)
+        self.reachable_delta_head = nn.Linear(self.hidden_size, 1)
 
     def encode(self, obs: torch.Tensor, hidden=None):
         if obs.ndim != 5:
@@ -76,6 +84,11 @@ class ModularBomberCnnLstm(nn.Module):
             "bomb_logit": self.bomb_head(features).squeeze(-1),
             "bomb_value_logit": self.bomb_value_head(features).squeeze(-1),
             "escape_logits": self.escape_head(features),
+            "box_value": self.box_value_head(features).squeeze(-1),
+            "death_risk_logit": self.death_risk_head(features).squeeze(-1),
+            "zero_value_logit": self.zero_value_head(features).squeeze(-1),
+            "escape_success_logit": self.escape_success_head(features).squeeze(-1),
+            "reachable_delta": self.reachable_delta_head(features).squeeze(-1),
         }
         if self.action_head is not None:
             out["action_logits"] = self.action_head(features)
