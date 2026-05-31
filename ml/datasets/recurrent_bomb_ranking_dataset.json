@@ -1,0 +1,15 @@
+{
+  "balanced_dataset": "ml/datasets/recurrent_bc_balanced_sequences.npz",
+  "counterfactual_negatives": "ml\\datasets\\bomb_counterfactual_negatives.npz",
+  "positive_count": 180,
+  "unsafe_negative_count": 120,
+  "counterfactual_negative_count": 720,
+  "total_negative_count": 840,
+  "pair_count": 1440,
+  "positive_boxes_mean": 1.7611111402511597,
+  "negative_boxes_mean": 0.0,
+  "negative_source_counts": {
+    "balanced_unsafe": 120,
+    "counterfactual": 720
+  }
+}

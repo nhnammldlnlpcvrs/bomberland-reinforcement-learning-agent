@@ -1,0 +1,27 @@
+{
+  "output": "ml\\datasets\\bomb_outcome_dataset.npz",
+  "onpolicy_count": 7396,
+  "onpolicy_useful": 479,
+  "onpolicy_zero": 5294,
+  "onpolicy_death": 295,
+  "value_v2_count": 10096,
+  "value_v2_positive": 659,
+  "sample_count": 17492,
+  "useful_count": 1138,
+  "zero_value_count": 14436,
+  "death_count": 590,
+  "boxes_destroyed_mean": 0.17802423238754272,
+  "boxes_destroyed_mean_useful": 2.1168715953826904,
+  "positive_negative_overlap": {
+    "useful_and_death": 0,
+    "useful_and_zero": 0,
+    "zero_and_death": 135
+  },
+  "source_distribution": {
+    "useful_positive": 1138,
+    "zero_value_negative": 1688,
+    "death_negative": 590,
+    "safe_nonbomb": 12756,
+    "counterfactual": 1320
+  }
+}

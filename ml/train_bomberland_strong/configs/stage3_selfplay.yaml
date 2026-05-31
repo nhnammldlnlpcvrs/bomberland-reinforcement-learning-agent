@@ -1,0 +1,15 @@
+stage: stage3
+description: Curated self-play using only accepted checkpoints.
+frame_stack: 4
+opponents:
+  - random
+  - simple
+  - online_robust
+  - accepted_checkpoints
+learning_rate: 0.00003
+ent_coef: 0.01
+clip_range: 0.08
+target_kl: 0.01
+n_steps: 512
+batch_size: 256
+objective: leaderboard-style robustness without loading failed historical policies

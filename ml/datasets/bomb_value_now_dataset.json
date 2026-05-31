@@ -1,0 +1,20 @@
+{
+  "output": "ml\\datasets\\bomb_value_now_dataset.npz",
+  "positive_count": 180,
+  "safe_zero_value_negative_count": 1200,
+  "unsafe_negative_count": 1320,
+  "gameplay_zero_value_negative_count_available_only": 8001,
+  "gameplay_zero_value_negative_count_with_obs": 0,
+  "total_count": 2700,
+  "positive_fraction": 0.06666667014360428,
+  "source_distribution": {
+    "safe_value_positive": 180,
+    "safe_zero_value_negative": 1200,
+    "unsafe_negative": 1320,
+    "gameplay_zero_value_negative": 0
+  },
+  "expected_boxes_mean_positive": 1.7611111402511597,
+  "expected_boxes_mean_negative": 0.0011904762359336019,
+  "counterfactual_safe_zero_used": 1200,
+  "counterfactual_unsafe_used": 1200
+}

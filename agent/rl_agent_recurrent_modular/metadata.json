@@ -1,0 +1,9 @@
+{
+  "team_id": "rl_agent_recurrent_modular",
+  "checkpoint": "modular_policy.pt",
+  "bomb_threshold": 0.5,
+  "bomb_value_threshold": 0.6,
+  "escape_context_steps": 7,
+  "research_only": true,
+  "note": "Offline modular recurrent BC agent. Not production."
+}

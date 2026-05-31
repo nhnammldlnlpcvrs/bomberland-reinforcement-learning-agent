@@ -33,10 +33,12 @@ from train_models.config import (
     DEVICE,
     EVAL_INTERVAL,
     GAMMA,
+    LATEGAME_PRESSURE_START,
     LOG_DIR,
     LOG_INTERVAL,
     MAX_STEPS,
     NUM_AGENTS,
+    PIN_MEMORY,
     POOL_INITIAL_AGENTS,
     POOL_MAX_SIZE,
     REWARD_BOMB_BOX_HIT,
@@ -45,6 +47,7 @@ from train_models.config import (
     REWARD_BOMB_PLACED,
     REWARD_BOX_DESTROYED,
     REWARD_CENTER_CONTROL,
+    REWARD_CORNER_CAMPING,
     REWARD_DANGER_ZONE,
     REWARD_DEATH,
     REWARD_ENTER_NEW_CELL,
@@ -52,10 +55,12 @@ from train_models.config import (
     REWARD_ESCAPE_MARGIN_LOW,
     REWARD_ITEM_COLLECTED,
     REWARD_KILL,
+    REWARD_KILL_MAX,
     REWARD_LATEGAME_PROXIMITY,
     REWARD_LATEGAME_SURVIVAL,
     REWARD_LIVING,
     REWARD_LOOP_PENALTY,
+    REWARD_OPPONENT_TRAP,
     REWARD_OWN_BOMB_DEATH,
     REWARD_REACHABLE_INCREASE,
     REWARD_REVISIT_PENALTY,
@@ -72,6 +77,7 @@ from train_models.config import (
     TILE_WALL,
     TOTAL_TIMESTEPS,
     UPDATE_EPOCHS,
+    USE_AMP,
     ensure_dirs,
 )
 from train_models.model import ActorCritic
@@ -79,6 +85,7 @@ from train_models.ppo_agent import PPOAgent, RolloutBuffer
 from train_models.state_processor import (
     encode_observation,
     encode_observation_v2,
+    flush_step_cache,
     get_action_mask,
 )
 
@@ -388,12 +395,19 @@ def compute_reward(
     else:
         info["item"] = 0.0
 
-    # ── Kills ───────────────────────────────────────────────────────────────
+    # ── Kills (with exponential late-game scaler — Directive 2.2) ────────────
     enemies_before = sum(1 for i, p in enumerate(players_before) if i != agent_id and int(p[2]) == 1)
     enemies_after = sum(1 for i, p in enumerate(players_after) if i != agent_id and int(p[2]) == 1)
     kills = enemies_before - enemies_after
     if kills > 0:
-        r_kill = REWARD_KILL * kills
+        step_now = int(obs_after.get("step", obs_after.get("current_step", 0)) or 0)
+        if step_now > LATEGAME_PRESSURE_START:
+            # Exponential ramp: REWARD_KILL → REWARD_KILL_MAX over steps 350→500
+            progress_past = (step_now - LATEGAME_PRESSURE_START) / (MAX_STEPS - LATEGAME_PRESSURE_START)
+            kill_mult = 1.0 + (REWARD_KILL_MAX / REWARD_KILL - 1.0) * (progress_past ** 2.0)
+            r_kill = REWARD_KILL * kill_mult * kills
+        else:
+            r_kill = REWARD_KILL * kills
         reward += r_kill
         info["kill"] = r_kill
     else:
@@ -470,6 +484,28 @@ def compute_reward(
             if enemy_dist is not None and enemy_dist <= 5:
                 reward += REWARD_LATEGAME_PROXIMITY
                 info["lategame_proximity"] = REWARD_LATEGAME_PROXIMITY
+
+        # Corner-camping penalty (Directive 2.2): penalize staying in corners past step 350
+        if step > LATEGAME_PRESSURE_START:
+            corners = [(1, 1), (1, 11), (11, 1), (11, 11)]
+            for cr, cc in corners:
+                if abs(my_r - cr) <= 2 and abs(my_c - cc) <= 2:
+                    # Exponential penalty the longer you camp
+                    camp_progress = (step - LATEGAME_PRESSURE_START) / (MAX_STEPS - LATEGAME_PRESSURE_START)
+                    camp_penalty = REWARD_CORNER_CAMPING * (1.0 + camp_progress)
+                    reward += camp_penalty
+                    info["corner_camping"] = camp_penalty
+                    break
+
+    # ── Opponent trap reward (Directive 2.1) ──────────────────────────────────
+    if action == A_BOMB:
+        from train_models.state_processor import _detect_opponent_trap as _trap_detect
+        from train_models.state_processor import _dead_end_plane_numpy, _bomb_set as _bset_sp
+        game_map_after_np = np.asarray(obs_after["map"], dtype=np.int32)
+        ded = _dead_end_plane_numpy(game_map_after_np, _bset_sp(np.asarray(obs_after["bombs"], dtype=np.int32)))
+        if _trap_detect(obs_before, agent_id, (my_r, my_c), ded):
+            reward += REWARD_OPPONENT_TRAP
+            info["opponent_trap"] = REWARD_OPPONENT_TRAP
 
     # ── Center control ──────────────────────────────────────────────────────
     center = (6, 6)
@@ -561,6 +597,10 @@ class Trainer:
         self.env_obs = [None] * num_envs
         self.training_slots = [i % NUM_AGENTS for i in range(num_envs)]  # cycle through all 4 slots
         self.opponents = [None] * num_envs
+
+        # Auto-resume from latest checkpoint (Directive 3.1)
+        self._try_auto_resume()
+
         self._reset_all_envs()
 
     def _reset_all_envs(self):
@@ -573,6 +613,90 @@ class Trainer:
             self.episode_rewards[i] = []
             self.episode_lengths[i] = 0
             self.episode_wins[i] = 0
+
+    def _try_auto_resume(self):
+        """
+        Auto-Resume Handshake (Directive 3.1).
+
+        Scans train_models/checkpoints/ for the latest model_step_*.pth file.
+        If found, loads model weights, optimizer state, global step count,
+        and total_env_steps, seamlessly resuming training from that point.
+        Also restores best_eval_winrate if a best_model.pth exists.
+        """
+        checkpoint_dir = CHECKPOINT_DIR
+        if not checkpoint_dir.exists():
+            print("[Trainer] No checkpoint directory found — starting from scratch")
+            return
+
+        step_files = sorted(checkpoint_dir.glob("model_step_*.pth"))
+        if not step_files:
+            # Try latest.pth as fallback
+            latest = checkpoint_dir / "latest.pth"
+            if latest.exists():
+                step_files = [latest]
+            else:
+                print("[Trainer] No checkpoint found — starting from scratch")
+                return
+
+        latest_ckpt = step_files[-1]
+        print(f"[Trainer] Found checkpoint: {latest_ckpt.name}")
+
+        try:
+            checkpoint = torch.load(str(latest_ckpt), map_location=self.device, weights_only=False)
+        except Exception as e:
+            print(f"[Trainer] Failed to load checkpoint: {e} — starting from scratch")
+            return
+
+        # Restore model weights
+        if "model_state_dict" in checkpoint:
+            try:
+                self.model.load_state_dict(checkpoint["model_state_dict"])
+                print("[Trainer] Model weights restored")
+            except Exception as e:
+                print(f"[Trainer] Model weights mismatch: {e} — using fresh weights")
+
+        # Restore optimizer state
+        if "optimizer_state_dict" in checkpoint:
+            try:
+                self.agent.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+                print("[Trainer] Optimizer state restored")
+            except Exception as e:
+                print(f"[Trainer] Optimizer state mismatch: {e} — using fresh optimizer")
+
+        # Restore AMP scaler state
+        if "scaler_state_dict" in checkpoint and self.agent.scaler is not None:
+            try:
+                self.agent.scaler.load_state_dict(checkpoint["scaler_state_dict"])
+                print("[Trainer] AMP scaler state restored")
+            except Exception:
+                pass
+
+        # Restore training progress
+        if "total_env_steps" in checkpoint:
+            self.total_env_steps = checkpoint["total_env_steps"]
+            self.global_step = self.total_env_steps
+            print(f"[Trainer] Resuming from step {self.total_env_steps:,}")
+
+        if "episode_count" in checkpoint:
+            self.episode_count = checkpoint["episode_count"]
+
+        if "best_eval_winrate" in checkpoint:
+            self.best_eval_winrate = checkpoint["best_eval_winrate"]
+            print(f"[Trainer] Best eval win rate: {self.best_eval_winrate:.2%}")
+
+        # Restore agent pool entries from pool directory
+        pool_files = sorted(AGENT_POOL_DIR.glob("pool_step_*.pth"))
+        for pf in pool_files:
+            self.pool.add_checkpoint(str(pf))
+        if pool_files:
+            print(f"[Trainer] Restored {len(pool_files)} agent pool entries")
+
+        # Re-initialize random seeds to avoid replaying same sequences
+        random.seed(self.seed + self.total_env_steps)
+        np.random.seed(self.seed + self.total_env_steps)
+        torch.manual_seed(self.seed + self.total_env_steps)
+
+        print(f"[Trainer] Auto-resume complete — continuing from step {self.total_env_steps:,}")
 
     def _get_all_actions(self, env_idx: int, obs: dict) -> list:
         """Collect actions for all 4 agents in one environment."""
@@ -608,6 +732,10 @@ class Trainer:
 
         Returns True if any data was collected (buffer is ready for update).
         """
+        # Flush the step singleton cache at rollout boundary to prevent any
+        # cross-episode contamination and ensure zero memory leak.
+        flush_step_cache()
+
         buffer = RolloutBuffer(self.rollout_steps, num_envs=self.num_envs)
 
         # Track previous observations for reward computation
@@ -871,10 +999,18 @@ class Trainer:
                 # Periodic checkpoint
                 if self.total_env_steps - last_save_step >= SAVE_INTERVAL:
                     ckpt_path = CHECKPOINT_DIR / f"model_step_{self.total_env_steps:08d}.pth"
-                    self.agent.save(str(ckpt_path))
+                    self.agent.save(str(ckpt_path), extra_state={
+                        "total_env_steps": self.total_env_steps,
+                        "episode_count": self.episode_count,
+                        "best_eval_winrate": self.best_eval_winrate,
+                    })
                     # Also save as latest
                     latest_path = CHECKPOINT_DIR / "latest.pth"
-                    self.agent.save(str(latest_path))
+                    self.agent.save(str(latest_path), extra_state={
+                        "total_env_steps": self.total_env_steps,
+                        "episode_count": self.episode_count,
+                        "best_eval_winrate": self.best_eval_winrate,
+                    })
                     last_save_step = self.total_env_steps
                     print(f"[Trainer] Saved checkpoint at step {self.total_env_steps:,} "
                           f"→ {ckpt_path.name}")
@@ -901,13 +1037,20 @@ class Trainer:
                     if eval_metrics["win_rate"] > self.best_eval_winrate:
                         self.best_eval_winrate = eval_metrics["win_rate"]
                         best_path = CHECKPOINT_DIR / "best_model.pth"
-                        self.agent.save_weights_only(str(best_path))
+                        self.agent.save(str(best_path), extra_state={
+                            "total_env_steps": self.total_env_steps,
+                            "best_eval_winrate": self.best_eval_winrate,
+                        })
                         print(f"[Trainer] New best model! win_rate={self.best_eval_winrate:.2%}")
 
                 # Periodic agent-pool snapshot
                 if self.total_env_steps - last_pool_step >= SELF_PLAY_UPDATE_INTERVAL:
                     pool_path = AGENT_POOL_DIR / f"pool_step_{self.total_env_steps:08d}.pth"
-                    self.agent.save_weights_only(str(pool_path))
+                    self.agent.save(str(pool_path), extra_state={
+                        "total_env_steps": self.total_env_steps,
+                        "episode_count": self.episode_count,
+                        "best_eval_winrate": self.best_eval_winrate,
+                    })
                     self.pool.add_checkpoint(str(pool_path))
                     last_pool_step = self.total_env_steps
                     print(f"[Trainer] Added checkpoint to pool (size={len(self.pool.entries)})")
@@ -925,10 +1068,15 @@ class Trainer:
             print("\n[Trainer] Interrupted. Saving final checkpoint...")
 
         # Final save
+        final_extra = {
+            "total_env_steps": self.total_env_steps,
+            "episode_count": self.episode_count,
+            "best_eval_winrate": self.best_eval_winrate,
+        }
         final_path = CHECKPOINT_DIR / f"model_final_{self.total_env_steps:08d}.pth"
-        self.agent.save(str(final_path))
+        self.agent.save(str(final_path), extra_state=final_extra)
         latest_path = CHECKPOINT_DIR / "latest.pth"
-        self.agent.save(str(latest_path))
+        self.agent.save(str(latest_path), extra_state=final_extra)
         self.agent.save_weights_only(str(CHECKPOINT_DIR / "best_model.pth"))
 
         self.writer.close()
