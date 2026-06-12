@@ -1,7 +1,9 @@
 """
-Hybrid Bomberland Agent: Rule-based + BFS + Heuristic Scoring.
+Hybrid Bomberland Agent: Rule-based + BFS + Heuristic Scoring + optional
+model-assisted movement tiebreaker.
 
-No ML dependencies. Pure Python stdlib + numpy only.
+The rule policy remains primary.  The optional model is disabled by default
+and can only rerank already-safe movement actions after rule scoring.
 Designed to run well under 100ms per act() call.
 
 Architecture:
@@ -10,6 +12,10 @@ Architecture:
   3. BFS Pathfinding    — safe-path search, escape verification
   4. Heuristic Scorer   — rank all 6 actions, pick best
 """
+
+import os
+import time
+from pathlib import Path
 
 import numpy as np
 from collections import deque
@@ -82,6 +88,33 @@ EXPANSION_SCORE_MULTIPLIER = 0.45
 LOOP_EXPANSION_SCORE_MULTIPLIER = 0.75
 TERRITORY_PRESSURE_MULTIPLIER = 0.5
 ACTION_ADVANTAGE_WEIGHT = 0.15
+
+HYBRID_MODEL_ENABLE = os.environ.get("HYBRID_MODEL_ENABLE", "true").lower() in {
+    "1", "true", "yes", "on"
+}
+HYBRID_MODEL_CHECKPOINT = os.environ.get(
+    "HYBRID_MODEL_CHECKPOINT",
+    str(Path(__file__).resolve().parent / "ml" / "checkpoints" / "action_ranker_bomb_fixed.pt"),
+)
+HYBRID_MODEL_MAX_LATENCY_MS = float(os.environ.get("HYBRID_MODEL_MAX_LATENCY_MS", "5"))
+HYBRID_MODEL_ONLY_SAFE_ACTIONS = os.environ.get(
+    "HYBRID_MODEL_ONLY_SAFE_ACTIONS", "true"
+).lower() in {"1", "true", "yes", "on"}
+HYBRID_MODEL_CONF_MARGIN = float(os.environ.get("HYBRID_MODEL_CONF_MARGIN", "0.18"))
+HYBRID_MODEL_SKIP_AFTER_BOMB_STEPS = int(os.environ.get("HYBRID_MODEL_SKIP_AFTER_BOMB_STEPS", "10"))
+HYBRID_MODEL_REQUIRE_SAFE_AREA_NONDECREASE = os.environ.get(
+    "HYBRID_MODEL_REQUIRE_SAFE_AREA_NONDECREASE", "true"
+).lower() in {"1", "true", "yes", "on"}
+HYBRID_MODEL_SKIP_NEAR_BOMB = os.environ.get(
+    "HYBRID_MODEL_SKIP_NEAR_BOMB", "true"
+).lower() in {"1", "true", "yes", "on"}
+
+MODEL_TIE_MARGIN = 5.0
+MODEL_MIN_CONFIDENCE_GAP = HYBRID_MODEL_CONF_MARGIN
+MODEL_CANDIDATE_ACTIONS = tuple(MOVE_ACTIONS)
+MODEL_SAFE_AREA_DEPTH = 6
+MODEL_NEAR_BOMB_RADIUS = 3
+MODEL_BLAST_LOOKAHEAD = 4
 
 
 # ==============================================================================
@@ -394,6 +427,52 @@ def _enemy_in_blast_line(r, c, radius, game_map, players, agent_id):
             if game_map[nr, nc] == TILE_BOX:
                 break
     return False
+
+
+def _bomb_danger_near(pos, danger_time, radius=MODEL_NEAR_BOMB_RADIUS):
+    """True if a soon-active blast threat exists near pos."""
+    pr, pc = pos
+    for r in range(max(1, pr - radius), min(BOARD_SIZE - 1, pr + radius + 1)):
+        for c in range(max(1, pc - radius), min(BOARD_SIZE - 1, pc + radius + 1)):
+            if abs(r - pr) + abs(c - pc) <= radius and danger_time[r, c] < INF:
+                return True
+    return False
+
+
+def _reachable_safe_area(pos, game_map, bomb_set, danger_time, max_depth=MODEL_SAFE_AREA_DEPTH):
+    """Count cells reachable without arriving into danger."""
+    q = deque()
+    q.append((pos, 0))
+    visited = {pos}
+    safe_count = 0
+
+    while q:
+        cell, dist = q.popleft()
+        r, c = cell
+        if danger_time[r, c] <= dist + 1:
+            continue
+        safe_count += 1
+        if dist >= max_depth:
+            continue
+        for action in MOVE_ACTIONS:
+            dr, dc = DIRS[action]
+            nr, nc = r + dr, c + dc
+            npos = (nr, nc)
+            if npos in visited:
+                continue
+            if not _is_passable(nr, nc, game_map, bomb_set):
+                continue
+            if danger_time[nr, nc] <= dist + 2:
+                continue
+            visited.add(npos)
+            q.append((npos, dist + 1))
+
+    return safe_count
+
+
+def _in_current_or_future_blast(pos, danger_time, lookahead=MODEL_BLAST_LOOKAHEAD):
+    r, c = pos
+    return danger_time[r, c] <= lookahead
 
 
 # ==============================================================================
@@ -930,6 +1009,88 @@ def _score_bomb(my_pos, my_state, game_map, players, bomb_set,
 
 
 # ==============================================================================
+# Optional model tiebreaker
+# ==============================================================================
+
+class _OptionalActionRanker:
+    """Lazy, failure-tolerant action ranker used only for safe movement ties."""
+
+    def __init__(self, checkpoint_path):
+        self.checkpoint_path = str(checkpoint_path)
+        self.enabled = bool(HYBRID_MODEL_ENABLE)
+        self.loaded = False
+        self.load_attempted = False
+        self.load_failed = False
+        self.model = None
+        self.torch = None
+        self.encode_observation = None
+
+    def _load(self):
+        if not self.enabled or self.load_failed:
+            return False
+        if self.loaded:
+            return True
+        if self.load_attempted:
+            return False
+        self.load_attempted = True
+
+        try:
+            checkpoint = Path(self.checkpoint_path)
+            if not checkpoint.exists():
+                self.load_failed = True
+                return False
+
+            import torch
+            from ml.features import encode_observation
+            from ml.models.simple_cnn_policy import load_checkpoint
+
+            model, _metadata = load_checkpoint(str(checkpoint), map_location="cpu")
+            model.eval()
+            self.torch = torch
+            self.encode_observation = encode_observation
+            self.model = model
+            self.loaded = True
+            return True
+        except Exception:
+            self.load_failed = True
+            self.model = None
+            self.torch = None
+            self.encode_observation = None
+            return False
+
+    def choose(self, obs, agent_id, candidate_actions):
+        """Return (action, gap, elapsed_ms), or (None, 0.0, elapsed_ms)."""
+        started = time.perf_counter()
+        if not self._load():
+            elapsed_ms = (time.perf_counter() - started) * 1000.0
+            return None, 0.0, elapsed_ms
+
+        try:
+            frame = dict(obs)
+            frame["_agent_index"] = int(agent_id)
+            encoded = self.encode_observation(frame)
+            tensor = encoded["tensor"].astype(np.float32, copy=False)
+            x = self.torch.from_numpy(tensor).unsqueeze(0)
+            with self.torch.no_grad():
+                logits = self.model(x)[0]
+                probs = self.torch.softmax(logits, dim=0).cpu().numpy()
+
+            ranked = sorted(
+                ((int(action), float(probs[int(action)])) for action in candidate_actions),
+                key=lambda item: item[1],
+                reverse=True,
+            )
+            elapsed_ms = (time.perf_counter() - started) * 1000.0
+            if not ranked:
+                return None, 0.0, elapsed_ms
+            gap = ranked[0][1] - (ranked[1][1] if len(ranked) > 1 else 0.0)
+            return ranked[0][0], float(gap), elapsed_ms
+        except Exception:
+            elapsed_ms = (time.perf_counter() - started) * 1000.0
+            return None, 0.0, elapsed_ms
+
+
+# ==============================================================================
 # Agent class
 # ==============================================================================
 
@@ -940,14 +1101,29 @@ class Agent:
       - Heuristic action scoring (safety, items, boxes, enemies)
       - Escape verification before every bomb placement
 
-    No ML, no network, no disk I/O.  Under 100 ms per act().
+    Optional ML tiebreaker is disabled by default and may only rerank safe
+    movement actions.  Under 100 ms per act().
     """
-    team_id = "HybridAgent"
+    team_id = "HybridAgent-ModelOptimized"
 
     def __init__(self, agent_id: int):
         self.agent_id = int(agent_id)
         self.position_history = []
         self.max_position_history = MAX_POSITION_HISTORY
+        self.last_bomb_step = -10**9
+        self.model_ranker = _OptionalActionRanker(HYBRID_MODEL_CHECKPOINT)
+        self.counters = {
+            "model_loaded": 0,
+            "model_inference_errors": 0,
+            "model_tiebreaker_used": 0,
+            "model_action_accepted": 0,
+            "model_action_rejected_by_safety": 0,
+            "fallback_to_rule": 0,
+        }
+        self.reject_reason_counts = {}
+        self.intervention_log = []
+        if HYBRID_MODEL_ENABLE and self.model_ranker._load():
+            self.counters["model_loaded"] = 1
 
     def _maybe_reset_position_history(self, my_pos, bombs):
         spawn_positions = {
@@ -977,6 +1153,114 @@ class Agent:
             and (len(set(recent)) <= 3
                  or self.position_history.count(self.position_history[-1]) >= 4)
         )
+
+    def _reject_model(self, reason, rule_action):
+        self.reject_reason_counts[reason] = self.reject_reason_counts.get(reason, 0) + 1
+        self.counters["fallback_to_rule"] += 1
+        return rule_action
+
+    def _log_intervention(self, step, rule_action, model_action, candidates, gap):
+        if len(self.intervention_log) >= 100:
+            self.intervention_log.pop(0)
+        self.intervention_log.append({
+            "step": int(step),
+            "rule_action": int(rule_action),
+            "model_action": int(model_action),
+            "candidates": [int(action) for action in candidates],
+            "confidence_margin": float(gap),
+        })
+
+    def _maybe_model_tiebreak(self, obs, rule_action, final_scores, action_positions,
+                              my_pos, game_map, bomb_set, danger_time,
+                              emergency_first_action):
+        """Rerank a close safe movement tie, otherwise return rule_action."""
+        if not HYBRID_MODEL_ENABLE:
+            return self._reject_model("disabled", rule_action)
+
+        if HYBRID_MODEL_ONLY_SAFE_ACTIONS and rule_action not in MODEL_CANDIDATE_ACTIONS:
+            return self._reject_model("rule_action_not_movement", rule_action)
+
+        current_step = int(obs["step"]) if "step" in obs else None
+        if (
+            current_step is not None
+            and current_step - self.last_bomb_step <= HYBRID_MODEL_SKIP_AFTER_BOMB_STEPS
+        ):
+            return self._reject_model("recent_own_bomb", rule_action)
+
+        if emergency_first_action is not None and rule_action == emergency_first_action:
+            return self._reject_model("path_to_safety", rule_action)
+
+        if danger_time[my_pos[0], my_pos[1]] < INF:
+            return self._reject_model("current_cell_in_bomb_danger", rule_action)
+
+        if HYBRID_MODEL_SKIP_NEAR_BOMB and _bomb_danger_near(my_pos, danger_time):
+            return self._reject_model("near_bomb_danger", rule_action)
+
+        rule_score = final_scores.get(rule_action, -1e9)
+        if rule_score <= -1e8:
+            return self._reject_model("invalid_rule_score", rule_action)
+
+        baseline_area = _reachable_safe_area(
+            action_positions.get(rule_action, my_pos),
+            game_map,
+            bomb_set,
+            danger_time,
+            MODEL_SAFE_AREA_DEPTH,
+        )
+
+        candidates = []
+        for action in MODEL_CANDIDATE_ACTIONS:
+            score = final_scores.get(action, -1e9)
+            pos = action_positions.get(action)
+            if score <= -1e8 or pos is None:
+                continue
+            if rule_score - score > MODEL_TIE_MARGIN:
+                continue
+            if _in_current_or_future_blast(pos, danger_time):
+                self.counters["model_action_rejected_by_safety"] += 1
+                self.reject_reason_counts["candidate_in_future_blast"] = (
+                    self.reject_reason_counts.get("candidate_in_future_blast", 0) + 1
+                )
+                continue
+            if HYBRID_MODEL_REQUIRE_SAFE_AREA_NONDECREASE:
+                area = _reachable_safe_area(
+                    pos, game_map, bomb_set, danger_time, MODEL_SAFE_AREA_DEPTH
+                )
+                if area < baseline_area:
+                    self.counters["model_action_rejected_by_safety"] += 1
+                    self.reject_reason_counts["safe_area_decrease"] = (
+                        self.reject_reason_counts.get("safe_area_decrease", 0) + 1
+                    )
+                    continue
+            candidates.append(action)
+
+        if len(candidates) < 2:
+            return self._reject_model("too_few_safe_candidates", rule_action)
+
+        choice, gap, elapsed_ms = self.model_ranker.choose(obs, self.agent_id, candidates)
+        self.counters["model_loaded"] = 1 if self.model_ranker.loaded else 0
+
+        if choice is None:
+            if self.model_ranker.loaded:
+                self.counters["model_inference_errors"] += 1
+            return self._reject_model("model_inference_failed", rule_action)
+
+        self.counters["model_tiebreaker_used"] += 1
+
+        if elapsed_ms > HYBRID_MODEL_MAX_LATENCY_MS:
+            return self._reject_model("latency_gate", rule_action)
+
+        if choice not in candidates or choice == A_BOMB:
+            self.counters["model_action_rejected_by_safety"] += 1
+            return self._reject_model("choice_rejected_by_safety", rule_action)
+
+        if gap < MODEL_MIN_CONFIDENCE_GAP:
+            return self._reject_model("confidence_margin", rule_action)
+
+        if choice != rule_action:
+            self.counters["model_action_accepted"] += 1
+            self._log_intervention(-1 if current_step is None else current_step, rule_action, choice, candidates, gap)
+        return choice
 
     def act(self, obs: dict) -> int:
         self._future_cache = {}
@@ -1008,11 +1292,18 @@ class Agent:
 
         # ---- 4. Emergency escape ----
         curr_dt = danger_time[my_r, my_c]
+        emergency_first_action = None
         if curr_dt <= 3:
             safe = _find_nearest_safe(my_pos, game_map, bomb_set,
                                       danger_time, MAX_BFS_SAFE)
             if safe is not None:
+                emergency_first_action = safe[0]
                 return safe[0]  # first_action
+        elif curr_dt < INF:
+            safe = _find_nearest_safe(my_pos, game_map, bomb_set,
+                                      danger_time, MAX_BFS_SAFE)
+            if safe is not None:
+                emergency_first_action = safe[0]
 
         bomb_escape_pressure = None
         if bombs_left > 0 and my_pos not in bomb_set:
@@ -1098,4 +1389,19 @@ class Agent:
                         best_score = score
                         best_action = action
 
+        rule_action = best_action
+        best_action = self._maybe_model_tiebreak(
+            obs,
+            rule_action,
+            final_scores,
+            action_positions,
+            my_pos,
+            game_map,
+            bomb_set,
+            danger_time,
+            emergency_first_action,
+        )
+        if best_action == A_BOMB:
+            if "step" in obs:
+                self.last_bomb_step = int(obs["step"])
         return best_action
