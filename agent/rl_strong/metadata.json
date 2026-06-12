@@ -1,0 +1,7 @@
+{
+  "frame_stack": 4,
+  "base_channels": 19,
+  "observation_shape": [76, 13, 13],
+  "track": "rl_strong",
+  "note": "Experimental frame-stacked PPO agent with inference-time legality, danger, and bomb-escape filtering. Do not promote without repeated benchmark gates."
+}
